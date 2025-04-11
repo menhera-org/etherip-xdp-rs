@@ -17,6 +17,10 @@ use aya_ebpf::{
     },
     programs::XdpContext,
     maps::HashMap,
+    helpers::gen::{
+        bpf_xdp_adjust_head,
+        bpf_redirect,
+    },
 };
 use aya_log_ebpf::{
     info,
@@ -101,7 +105,10 @@ unsafe fn encapsulate(ctx: XdpContext) -> Result<u32, ()> {
     // TODO: Implement non-zero VLAN ID handling
     let vlan_id = 0u16;
 
-    (*ctx.ctx).data -= (EthHdr::LEN + Ipv6Hdr::LEN + EtheripHdr::LEN) as u32;
+    if 0 != bpf_xdp_adjust_head(ctx.ctx, 0 - (EthHdr::LEN as i32 + Ipv6Hdr::LEN as i32 + EtheripHdr::LEN as i32)) {
+        error!(&ctx, "Failed to adjust head");
+        return Ok(xdp_action::XDP_DROP);
+    }
 
     let new_frame_len = ((*ctx.ctx).data_end - (*ctx.ctx).data) as usize;
 
@@ -187,7 +194,7 @@ unsafe fn encapsulate(ctx: XdpContext) -> Result<u32, ()> {
         break;
     }
 
-    (*ctx.ctx).egress_ifindex = outer_if_index as u32;
+    bpf_redirect(outer_if_index, 0);
     
     Ok(xdp_action::XDP_REDIRECT)
 }
@@ -237,8 +244,12 @@ unsafe fn decapsulate(ctx: XdpContext) -> Result<u32, ()> {
         return Ok(xdp_action::XDP_PASS);
     }
 
-    (*ctx.ctx).data += (EthHdr::LEN + Ipv6Hdr::LEN + EtheripHdr::LEN) as u32;
-    (*ctx.ctx).egress_ifindex = inner_if_index as u32;
+    if 0 != bpf_xdp_adjust_head(ctx.ctx, (EthHdr::LEN + Ipv6Hdr::LEN + EtheripHdr::LEN) as i32) {
+        error!(&ctx, "Failed to adjust head");
+        return Ok(xdp_action::XDP_DROP);
+    }
+
+    bpf_redirect(inner_if_index, 0);
 
     Ok(xdp_action::XDP_REDIRECT)
 }
