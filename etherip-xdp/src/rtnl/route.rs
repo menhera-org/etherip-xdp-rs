@@ -49,6 +49,10 @@ impl RouteManager {
                 }
             }
 
+            if prefix_len == 0 && response.header.destination_prefix_length == 0 {
+                found = true;
+            }
+
             if found {
                 routes.push((InterfaceId::new(if_index), gateway));
             }
