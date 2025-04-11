@@ -176,16 +176,31 @@ unsafe fn encapsulate(ctx: XdpContext) -> Result<u32, ()> {
                     info!(&ctx, "MSS: {} -> {}", mss, target_mss);
                     core::ptr::write_unaligned(ptr_at::<u16>(&ctx, offset)?, u16::to_be(target_mss as u16) as u16);
 
-                    let old_val = mss;
-                    let new_val = target_mss;
-                    let csum = &raw mut (*inner_tcp_hdr).check as *mut u16;
-                    let undo: u32 = !(core::ptr::read_unaligned(csum) as u32 + !(old_val as u32));
-                    let new_csum = undo + (if undo < !(old_val as u32) { 1 } else { 0 }) + (new_val as u32);
-                    let new_csum = new_csum + (if new_csum < (new_val as u32) { 1 } else { 0 });
-                    let new_csum = (new_csum & 0xffff) + ((new_csum >> 16) & 0xffff);
-                    let new_csum = (new_csum & 0xffff) + ((new_csum >> 16) & 0xffff);
+                    // calculate new checksum
+                    let sum16: u16;
 
-                    core::ptr::write_unaligned(csum, (!new_csum) as u16);
+                    let old_mss_inv = !(mss as u32);
+                    let new_mss = target_mss as u32;
+                    
+                    let old_sum = u16::from_be((*inner_tcp_hdr).check) as u32;
+                    let undo = (!old_sum).wrapping_add(old_mss_inv);
+                    let mut sum = undo.wrapping_add(if undo < old_mss_inv { 1 } else { 0 }).wrapping_add(new_mss);
+                    if sum < new_mss {
+                        sum = sum.wrapping_add(1);
+                    }
+
+                    // fold 32-bit sum to 16 bits
+                    sum = (sum >> 16).wrapping_add(sum & 0xFFFF);
+                    sum = (sum >> 16).wrapping_add(sum & 0xFFFF);
+
+                    // calculate the new checksum
+                    sum16 = u16::to_be(!sum as u16);
+
+                    // Update the checksum field in the TCP header
+                    let csum = &mut (*inner_tcp_hdr).check;
+
+                    // update checksum
+                    core::ptr::write_unaligned(csum, sum16);
                 }
             } else {
                 info!(&ctx, "Not a TCP MSS option");
@@ -259,9 +274,6 @@ unsafe fn ptr_at<T>(
     ctx: &XdpContext, offset: usize
 ) -> Result<*mut T, ()> {
     let start = ctx.data();
-    if (start as *const u8).is_null() {
-        return Err(());
-    }
     let end = ctx.data_end();
     let len = core::mem::size_of::<T>();
 

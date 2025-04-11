@@ -117,7 +117,7 @@ async fn main() -> anyhow::Result<()> {
 
     let mut remote_addr_map = std::collections::HashMap::<u16, RemoteAddr>::new();
     remote_addr_map.insert(
-        vlan::VLAN_ID_LOCAL,
+        0,
         RemoteAddr::new(&remote_address).context("failed to parse remote address")?,
     );
 
@@ -168,6 +168,7 @@ async fn main() -> anyhow::Result<()> {
                 continue;
             }
             let (egress_if_id, gateway_addr) = route[0];
+            log::debug!("Egress interface ID: {}, Gateway address: {}", egress_if_id.inner_unchecked(), gateway_addr);
     
             let lladdr = neigh_manager.neigh_get(egress_if_id, std::net::IpAddr::V6(gateway_addr)).await?;
             if lladdr.is_none() {
@@ -175,6 +176,7 @@ async fn main() -> anyhow::Result<()> {
                 continue;
             }
             let lladdr = lladdr.unwrap();
+            log::debug!("Gateway's link layer address: {:?}", lladdr);
             let lladdr = mac::to_u64((&lladdr as &[u8]).try_into().unwrap());
     
             // Insert the MAC address of the local interface into the map
@@ -184,6 +186,7 @@ async fn main() -> anyhow::Result<()> {
                 continue;
             }
             let local_mac = local_mac.unwrap();
+            log::debug!("Local MAC address: {:?}", local_mac);
             let local_mac = mac::to_u64((&local_mac as &[u8]).try_into().unwrap());
             let mut mac_addr_map = aya::maps::HashMap::<_, u32, u64>::try_from(ebpf.map_mut("MAC_ADDR_MAP").unwrap())?;
             mac_addr_map.insert(mac::MAC_ADDR_LOCAL, local_mac, 0)?;
@@ -197,6 +200,7 @@ async fn main() -> anyhow::Result<()> {
                     log::error!("Failed to resolve remote address: {:?}", remote_addr);
                     continue;
                 };
+                log::debug!("Resolved remote address: {:?}", Ipv6Addr::from(addr));
                 let mut ipv6_addr_map = aya::maps::HashMap::<_, u16, u128>::try_from(ebpf.map_mut("IPV6_ADDR_MAP").unwrap())?;
                 ipv6_addr_map.insert(*vlan_id, addr, 0)?;
                 let mut vlan_id_map = aya::maps::HashMap::<_, u128, u16>::try_from(ebpf.map_mut("VLAN_ID_MAP").unwrap())?;
