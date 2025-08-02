@@ -217,6 +217,7 @@ unsafe fn encapsulate(ctx: XdpContext) -> Result<u32, ()> {
 unsafe fn decapsulate(ctx: XdpContext) -> Result<u32, ()> {
     let inner_if_index = *IF_INDEX_MAP.get(&iface::IF_INDEX_INNER).unwrap_or(&0);
     if inner_if_index == 0 {
+        info!(&ctx, "Unknown inner interface");
         return Ok(xdp_action::XDP_PASS);
     }
 
@@ -224,6 +225,8 @@ unsafe fn decapsulate(ctx: XdpContext) -> Result<u32, ()> {
 
     let local_addr = mac::from_u64(*MAC_ADDR_MAP.get(&mac::MAC_ADDR_LOCAL).unwrap_or(&0));
     if (*eth_hdr).dst_addr != local_addr {
+        let dst_addr = (*eth_hdr).dst_addr;
+        info!(&ctx, "MAC mismatch: {}:{}:{}:{}:{}:{} vs {}:{}:{}:{}:{}:{}", local_addr[0], local_addr[1], local_addr[2], local_addr[3], local_addr[4], local_addr[5], dst_addr[0], dst_addr[1], dst_addr[2], dst_addr[3], dst_addr[4], dst_addr[5]);
         return Ok(xdp_action::XDP_PASS);
     }
 
@@ -234,6 +237,7 @@ unsafe fn decapsulate(ctx: XdpContext) -> Result<u32, ()> {
     let ipv6_hdr = ptr_at::<Ipv6Hdr>(&ctx, EthHdr::LEN)?;
     let ip_local_addr = ipv6::from_u128(*IPV6_ADDR_MAP.get(&vlan::VLAN_ID_LOCAL).unwrap_or(&0));
     if (*ipv6_hdr).dst_addr.in6_u.u6_addr8 != ip_local_addr {
+        info!(&ctx, "IP addr mismatch");
         return Ok(xdp_action::XDP_PASS);
     }
 
@@ -242,6 +246,7 @@ unsafe fn decapsulate(ctx: XdpContext) -> Result<u32, ()> {
 
     // TODO: Implement non-zero VLAN ID handling
     if vlan_id != 0 {
+        info!(&ctx, "Detected tagged VLAN");
         return Ok(xdp_action::XDP_PASS);
     }
 
@@ -264,8 +269,14 @@ unsafe fn decapsulate(ctx: XdpContext) -> Result<u32, ()> {
         return Ok(xdp_action::XDP_DROP);
     }
 
-    bpf_redirect(inner_if_index, 0);
+    let flag: xdp_action::Type = bpf_redirect(inner_if_index, 0).try_into().map_err(|_| ())?;
 
+    if flag != xdp_action::XDP_REDIRECT {
+        error!(&ctx, "Failed to redirect");
+        return Ok(xdp_action::XDP_ABORTED);
+    }
+
+    //info!(&ctx, "Redirected to {}", inner_if_index);
     Ok(xdp_action::XDP_REDIRECT)
 }
 

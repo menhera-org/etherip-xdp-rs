@@ -33,6 +33,9 @@ impl NeighborManager {
         while let Some(response) = response.try_next().await.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))? {
             for neigh in response.attributes.iter() {
                 if let netlink_packet_route::neighbour::NeighbourAttribute::LinkLocalAddress(addr) = neigh {
+                    if addr == &[0, 0, 0, 0, 0, 0] {
+                        return Ok(None)
+                    }
                     return Ok(Some(addr.clone()));
                 }
             }
