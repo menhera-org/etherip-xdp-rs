@@ -34,7 +34,7 @@ impl NeighborManager {
             for neigh in response.attributes.iter() {
                 if let netlink_packet_route::neighbour::NeighbourAttribute::LinkLocalAddress(addr) = neigh {
                     if addr == &[0, 0, 0, 0, 0, 0] {
-                        return Ok(None)
+                        continue;
                     }
                     return Ok(Some(addr.clone()));
                 }
