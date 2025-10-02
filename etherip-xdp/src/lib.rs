@@ -1,4 +1,4 @@
-use anyhow::Context as _;
+use anyhow::{bail, Context as _};
 use aya::programs::{Xdp, XdpFlags};
 use clap::Parser;
 #[rustfmt::skip]
@@ -6,6 +6,7 @@ use log::{debug, info, warn};
 use tokio::signal;
 
 use core::net::Ipv6Addr;
+use std::collections::HashSet;
 use std::net::SocketAddr;
 
 use etherip_xdp_common::{iface, ipv6, mac, vlan};
@@ -25,9 +26,13 @@ pub struct Opt {
     #[clap(short = 'i', long, default_value = "eth1")]
     bridged_iface: String,
 
-    /// The IPv6 address of the remote end of the tunnel.
-    #[clap(short = 'r', long, default_value = "::1")]
-    remote_address: String,
+    /// Tunnel definitions mapping VLAN IDs to remote endpoints.
+    #[clap(
+        long = "tunnel",
+        value_parser = TunnelSpec::parse,
+        default_value = "remote=::1"
+    )]
+    tunnels: Vec<TunnelSpec>,
 }
 
 #[derive(Debug, Clone)]
@@ -68,11 +73,104 @@ impl RemoteAddr {
     }
 }
 
+#[derive(Debug, Clone)]
+struct TunnelConfig {
+    vlan_id: u16,
+    remote: RemoteAddr,
+}
+
+#[derive(Debug, Clone)]
+struct TunnelSpec {
+    vlan_id: Option<u16>,
+    remote: String,
+}
+
+impl TunnelSpec {
+    fn parse(raw: &str) -> Result<Self, String> {
+        let raw = raw.trim();
+        if raw.is_empty() {
+            return Err("tunnel definition must not be empty".to_string());
+        }
+
+        let mut remote = None;
+        let mut vlan = None;
+
+        for part in raw.split(',') {
+            let part = part.trim();
+            if part.is_empty() {
+                continue;
+            }
+
+            let mut kv = part.splitn(2, '=');
+            let key = kv.next().unwrap().trim();
+            if let Some(value) = kv.next() {
+                let value = value.trim();
+                match key {
+                    "remote" => {
+                        if remote.is_some() {
+                            return Err("duplicate remote entry in tunnel definition".to_string());
+                        }
+                        if value.is_empty() {
+                            return Err("remote address must not be empty".to_string());
+                        }
+                        remote = Some(value.to_string());
+                    }
+                    "vlan" => {
+                        if vlan.is_some() {
+                            return Err("duplicate vlan entry in tunnel definition".to_string());
+                        }
+                        let parsed = value
+                            .parse::<u16>()
+                            .map_err(|err| format!("invalid VLAN id '{value}': {err}"))?;
+                        vlan = Some(parsed);
+                    }
+                    _ => {
+                        return Err(format!("unknown tunnel option '{key}'"));
+                    }
+                }
+            } else {
+                if remote.is_none() {
+                    if key.is_empty() {
+                        return Err("remote address must not be empty".to_string());
+                    }
+                    remote = Some(key.to_string());
+                } else {
+                    return Err(format!("unexpected tunnel value '{part}'"));
+                }
+            }
+        }
+
+        let remote = remote.ok_or_else(|| "remote address is required for tunnel".to_string())?;
+
+        Ok(Self {
+            vlan_id: vlan,
+            remote,
+        })
+    }
+
+    fn into_config(self) -> anyhow::Result<TunnelConfig> {
+        let vlan_id = self.vlan_id.unwrap_or(vlan::VLAN_ID_NATIVE);
+        if vlan_id != vlan::VLAN_ID_NATIVE && vlan_id > vlan::VLAN_ID_MAX {
+            bail!(
+                "VLAN ID {vlan_id} is out of supported range {}..{}",
+                vlan::VLAN_ID_MIN,
+                vlan::VLAN_ID_MAX
+            );
+        }
+        if vlan_id == vlan::VLAN_ID_LOCAL {
+            bail!("VLAN ID {vlan_id} is reserved for local addressing");
+        }
+
+        let remote = RemoteAddr::new(&self.remote).context("failed to parse remote address")?;
+        Ok(TunnelConfig { vlan_id, remote })
+    }
+}
+
 pub async fn run(opt: Opt) -> anyhow::Result<()> {
     let Opt {
         bind_iface,
         bridged_iface,
-        remote_address,
+        tunnels,
     } = opt;
 
     // Bump the memlock rlimit. This is needed for older kernels that don't use the
@@ -121,11 +219,22 @@ pub async fn run(opt: Opt) -> anyhow::Result<()> {
         ));
     }
 
-    let mut remote_addr_map = std::collections::HashMap::<u16, RemoteAddr>::new();
-    remote_addr_map.insert(
-        0,
-        RemoteAddr::new(&remote_address).context("failed to parse remote address")?,
-    );
+    let mut tunnel_configs = Vec::with_capacity(tunnels.len());
+    let mut seen_vlans = HashSet::with_capacity(tunnels.len());
+
+    for spec in tunnels {
+        let config = spec.into_config()?;
+        if !seen_vlans.insert(config.vlan_id) {
+            bail!("duplicate tunnel configuration for VLAN {}", config.vlan_id);
+        }
+        tunnel_configs.push(config);
+    }
+
+    if !seen_vlans.contains(&vlan::VLAN_ID_NATIVE) {
+        info!("no native VLAN tunnel configured; untagged frames remain on the bridged interface");
+    }
+
+    let tunnels = tunnel_configs;
 
     let encap_program: &mut Xdp = ebpf.program_mut("etherip_xdp_encap").unwrap().try_into()?;
     encap_program.load()?;
@@ -209,23 +318,31 @@ pub async fn run(opt: Opt) -> anyhow::Result<()> {
             mac_addr_map.insert(mac::MAC_ADDR_LOCAL, local_mac, 0)?;
             mac_addr_map.insert(mac::MAC_ADDR_GATEWAY, lladdr, 0)?;
 
-            for (vlan_id, remote_addr) in remote_addr_map.iter() {
-                let addr = remote_addr.resolve().await;
-                let addr = if let Ok(addr) = addr {
-                    addr
-                } else {
-                    log::error!("Failed to resolve remote address: {:?}", remote_addr);
-                    continue;
+            for tunnel in &tunnels {
+                let addr = match tunnel.remote.resolve().await {
+                    Ok(addr) => addr,
+                    Err(err) => {
+                        log::error!(
+                            "Failed to resolve remote address for VLAN {}: {}",
+                            tunnel.vlan_id,
+                            err
+                        );
+                        continue;
+                    }
                 };
-                log::debug!("Resolved remote address: {:?}", Ipv6Addr::from(addr));
+                log::debug!(
+                    "Resolved remote address for VLAN {}: {}",
+                    tunnel.vlan_id,
+                    Ipv6Addr::from(addr)
+                );
                 let mut ipv6_addr_map = aya::maps::HashMap::<_, u16, u128>::try_from(
                     ebpf.map_mut("IPV6_ADDR_MAP").unwrap(),
                 )?;
-                ipv6_addr_map.insert(*vlan_id, addr, 0)?;
+                ipv6_addr_map.insert(tunnel.vlan_id, addr, 0)?;
                 let mut vlan_id_map = aya::maps::HashMap::<_, u128, u16>::try_from(
                     ebpf.map_mut("VLAN_ID_MAP").unwrap(),
                 )?;
-                vlan_id_map.insert(addr, *vlan_id, 0)?;
+                vlan_id_map.insert(addr, tunnel.vlan_id, 0)?;
             }
 
             tokio::time::sleep(tokio::time::Duration::from_secs(9)).await;

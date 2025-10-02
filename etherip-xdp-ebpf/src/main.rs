@@ -19,6 +19,11 @@ use network_types::{
     tcp::TcpHdr,
 };
 
+const ETH_P_VLAN: u16 = 0x8100;
+const ETH_P_QINQ: u16 = 0x88A8;
+const ETH_P_IPV4: u16 = 0x0800;
+const ETH_P_IPV6: u16 = 0x86DD;
+
 #[map]
 static IF_INDEX_MAP: HashMap<u32, u32> = HashMap::<u32, u32>::with_max_entries(2, 0);
 
@@ -42,6 +47,25 @@ struct EtheripHdr {
 
 impl EtheripHdr {
     const LEN: usize = core::mem::size_of::<Self>();
+}
+
+#[repr(C, packed)]
+#[derive(Copy, Clone)]
+struct VlanHdr {
+    tci: u16,
+    ether_type: u16,
+}
+
+impl VlanHdr {
+    const LEN: usize = core::mem::size_of::<Self>();
+
+    fn vlan_id(&self) -> u16 {
+        u16::from_be(self.tci) & 0x0fff
+    }
+
+    fn inner_ether_type(&self) -> u16 {
+        u16::from_be(self.ether_type)
+    }
 }
 
 #[repr(C)]
@@ -81,8 +105,7 @@ unsafe fn encapsulate(ctx: XdpContext) -> Result<u32, ()> {
         return Ok(xdp_action::XDP_DROP);
     }
 
-    // TODO: Implement non-zero VLAN ID handling
-    let vlan_id = 0u16;
+    let mut vlan_id = vlan::VLAN_ID_NATIVE;
 
     if 0 != bpf_xdp_adjust_head(
         ctx.ctx,
@@ -106,14 +129,6 @@ unsafe fn encapsulate(ctx: XdpContext) -> Result<u32, ()> {
     (*ipv6_hdr).flow_label = [0; 3];
     (*ipv6_hdr).hop_limit = 64;
 
-    let ip_local_addr = ipv6::from_u128(*IPV6_ADDR_MAP.get(&vlan::VLAN_ID_LOCAL).unwrap_or(&0));
-    let ip_remote_addr = ipv6::from_u128(*IPV6_ADDR_MAP.get(&vlan_id).unwrap_or(&0));
-
-    (*ipv6_hdr).dst_addr.in6_u.u6_addr8 = ip_remote_addr;
-    (*ipv6_hdr).src_addr.in6_u.u6_addr8 = ip_local_addr;
-    (*ipv6_hdr).next_hdr = IpProto::Etherip;
-    (*ipv6_hdr).payload_len = u16::to_be((new_frame_len - EthHdr::LEN - Ipv6Hdr::LEN) as u16);
-
     let etherip_hdr = ptr_at::<EtheripHdr>(&ctx, EthHdr::LEN + Ipv6Hdr::LEN)?;
     (*etherip_hdr).etherip_version = 0x30;
     (*etherip_hdr).reserved = 0;
@@ -122,9 +137,49 @@ unsafe fn encapsulate(ctx: XdpContext) -> Result<u32, ()> {
     let mut target_mss: usize = 1384;
     let inner_eth_hdr = ptr_at::<EthHdr>(&ctx, offset)?;
     offset += EthHdr::LEN;
+    let ether_type_ptr = core::ptr::addr_of!((*inner_eth_hdr).ether_type) as *const u16;
+    let mut inner_ethertype = u16::from_be(core::ptr::read_unaligned(ether_type_ptr));
+
+    if inner_ethertype == ETH_P_VLAN || inner_ethertype == ETH_P_QINQ {
+        let vlan_hdr_ptr = ptr_at::<VlanHdr>(&ctx, offset)?;
+        let vlan_hdr = core::ptr::read_unaligned(vlan_hdr_ptr);
+        let candidate_vlan = vlan_hdr.vlan_id();
+        if candidate_vlan == vlan::VLAN_ID_LOCAL {
+            return Ok(xdp_action::XDP_PASS);
+        }
+        if candidate_vlan > vlan::VLAN_ID_MAX && candidate_vlan != vlan::VLAN_ID_NATIVE {
+            return Ok(xdp_action::XDP_PASS);
+        }
+        vlan_id = candidate_vlan;
+        inner_ethertype = vlan_hdr.inner_ether_type();
+        offset += VlanHdr::LEN;
+
+        if inner_ethertype == ETH_P_VLAN || inner_ethertype == ETH_P_QINQ {
+            info!(&ctx, "Nested VLAN tags are not supported");
+            return Ok(xdp_action::XDP_PASS);
+        }
+    }
+
+    let remote_addr = match IPV6_ADDR_MAP.get(&vlan_id) {
+        Some(addr) if *addr != 0 => *addr,
+        _ => return Ok(xdp_action::XDP_PASS),
+    };
+    let local_addr = match IPV6_ADDR_MAP.get(&vlan::VLAN_ID_LOCAL) {
+        Some(addr) if *addr != 0 => *addr,
+        _ => return Ok(xdp_action::XDP_PASS),
+    };
+
+    let ip_remote_addr = ipv6::from_u128(remote_addr);
+    let ip_local_addr = ipv6::from_u128(local_addr);
+
+    (*ipv6_hdr).dst_addr.in6_u.u6_addr8 = ip_remote_addr;
+    (*ipv6_hdr).src_addr.in6_u.u6_addr8 = ip_local_addr;
+    (*ipv6_hdr).next_hdr = IpProto::Etherip;
+    (*ipv6_hdr).payload_len = u16::to_be((new_frame_len - EthHdr::LEN - Ipv6Hdr::LEN) as u16);
+
     loop {
-        match (*inner_eth_hdr).ether_type {
-            EtherType::Ipv4 => {
+        match inner_ethertype {
+            ETH_P_IPV4 => {
                 let inner_ip_hdr = ptr_at::<Ipv4Hdr>(&ctx, offset)?;
                 if (*inner_ip_hdr).proto != IpProto::Tcp {
                     break;
@@ -132,7 +187,7 @@ unsafe fn encapsulate(ctx: XdpContext) -> Result<u32, ()> {
                 offset += Ipv4Hdr::LEN;
                 target_mss = 1404;
             }
-            EtherType::Ipv6 => {
+            ETH_P_IPV6 => {
                 let inner_ip_hdr = ptr_at::<Ipv6Hdr>(&ctx, offset)?;
                 if (*inner_ip_hdr).next_hdr != IpProto::Tcp {
                     break;
@@ -247,11 +302,9 @@ unsafe fn decapsulate(ctx: XdpContext) -> Result<u32, ()> {
     let ip_remote_addr = (*ipv6_hdr).src_addr.in6_u.u6_addr8;
     let vlan_id = *VLAN_ID_MAP
         .get(&ipv6::to_u128(ip_remote_addr))
-        .unwrap_or(&4095);
+        .unwrap_or(&vlan::VLAN_ID_LOCAL);
 
-    // TODO: Implement non-zero VLAN ID handling
-    if vlan_id != 0 {
-        info!(&ctx, "Detected tagged VLAN");
+    if vlan_id == vlan::VLAN_ID_LOCAL {
         return Ok(xdp_action::XDP_PASS);
     }
 
