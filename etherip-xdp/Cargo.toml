@@ -1,10 +1,17 @@
 [package]
 name = "etherip-xdp"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 
+authors = ["Menhera.org Developers"]
+description = "EtherIP implementation using XDP for Linux, in Rust."
+license = "Apache-2.0 OR MPL-2.0"
+readme = "README.md"
+repository = "https://github.com/menhera-org/etherip-xdp-rs"
+homepage = "https://github.com/menhera-org/etherip-xdp-rs"
+
 [dependencies]
-etherip-xdp-common = { path = "../etherip-xdp-common", features = ["user"] }
+etherip-xdp-common = { version = "0.2.0", path = "../etherip-xdp-common", features = ["user"] }
 
 anyhow = { workspace = true, default-features = true }
 aya = { workspace = true }
@@ -37,7 +44,7 @@ aya-build = { workspace = true }
 # Finally note that *any* usage of `artifact = ...` in *any* Cargo.toml in the workspace breaks
 # workflows with stable cargo; stable cargo outright refuses to load manifests that use unstable
 # features.
-etherip-xdp-ebpf = { path = "../etherip-xdp-ebpf" }
+etherip-xdp-ebpf = { version = "0.2.0", path = "../etherip-xdp-ebpf" }
 
 [[bin]]
 name = "etherip-xdp"

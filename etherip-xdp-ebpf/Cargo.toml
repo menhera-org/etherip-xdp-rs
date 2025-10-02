@@ -1,10 +1,17 @@
 [package]
 name = "etherip-xdp-ebpf"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 
+authors = ["Menhera.org Developers"]
+description = "EtherIP implementation using XDP for Linux, in Rust - eBPF codes."
+license = "Apache-2.0 OR MPL-2.0"
+readme = "README.md"
+repository = "https://github.com/menhera-org/etherip-xdp-rs"
+homepage = "https://github.com/menhera-org/etherip-xdp-rs"
+
 [dependencies]
-etherip-xdp-common = { path = "../etherip-xdp-common" }
+etherip-xdp-common = { version = "0.2.0", path = "../etherip-xdp-common" }
 
 aya-ebpf = { workspace = true }
 aya-log-ebpf = { workspace = true }
