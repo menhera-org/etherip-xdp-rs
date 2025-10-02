@@ -41,4 +41,4 @@ etherip-xdp-ebpf = { path = "../etherip-xdp-ebpf" }
 
 [[bin]]
 name = "etherip-xdp"
-path = "src/main.rs"
+path = "src/bin/etherip-xdp.rs"

@@ -1,4 +1,3 @@
-
 use futures::TryStreamExt;
 
 use std::net::Ipv6Addr;
@@ -12,15 +11,25 @@ pub struct RouteManager {
 
 impl RouteManager {
     pub(crate) fn new(handle: &super::RtnetlinkConnection) -> Self {
-        Self { handle: handle.handle.route() }
+        Self {
+            handle: handle.handle.route(),
+        }
     }
 
-    pub async fn get_v6(&self, dst: std::net::Ipv6Addr, prefix_len: u8) -> Result<Vec<(InterfaceId, std::net::Ipv6Addr)>, std::io::Error> {
+    pub async fn get_v6(
+        &self,
+        dst: std::net::Ipv6Addr,
+        prefix_len: u8,
+    ) -> Result<Vec<(InterfaceId, std::net::Ipv6Addr)>, std::io::Error> {
         let mut routes = Vec::new();
         let req = self.handle.get(rtnetlink::IpVersion::V6);
         let response = req.execute();
         futures::pin_mut!(response);
-        while let Some(response) = response.try_next().await.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))? {
+        while let Some(response) = response
+            .try_next()
+            .await
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?
+        {
             let mut if_index = 0;
             let mut gateway = Ipv6Addr::UNSPECIFIED;
             let mut found = false;
@@ -59,5 +68,4 @@ impl RouteManager {
         }
         Ok(routes)
     }
-
 }

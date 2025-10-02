@@ -2,41 +2,20 @@
 #![no_main]
 #![allow(nonstandard_style, dead_code)]
 
-use etherip_xdp_common::{
-    vlan,
-    iface,
-    mac,
-    ipv6,
-};
+use etherip_xdp_common::{iface, ipv6, mac, vlan};
 
 use aya_ebpf::{
     bindings::xdp_action,
-    macros::{
-        xdp,
-        map,
-    },
-    programs::XdpContext,
+    helpers::gen::{bpf_redirect, bpf_xdp_adjust_head},
+    macros::{map, xdp},
     maps::HashMap,
-    helpers::gen::{
-        bpf_xdp_adjust_head,
-        bpf_redirect,
-    },
+    programs::XdpContext,
 };
-use aya_log_ebpf::{
-    info,
-    error,
-};
+use aya_log_ebpf::{error, info};
 
 use network_types::{
-    eth::{
-        EthHdr,
-        EtherType,
-    },
-    ip::{
-        IpProto,
-        Ipv6Hdr,
-        Ipv4Hdr,
-    },
+    eth::{EthHdr, EtherType},
+    ip::{IpProto, Ipv4Hdr, Ipv6Hdr},
     tcp::TcpHdr,
 };
 
@@ -105,7 +84,10 @@ unsafe fn encapsulate(ctx: XdpContext) -> Result<u32, ()> {
     // TODO: Implement non-zero VLAN ID handling
     let vlan_id = 0u16;
 
-    if 0 != bpf_xdp_adjust_head(ctx.ctx, 0 - (EthHdr::LEN as i32 + Ipv6Hdr::LEN as i32 + EtheripHdr::LEN as i32)) {
+    if 0 != bpf_xdp_adjust_head(
+        ctx.ctx,
+        0 - (EthHdr::LEN as i32 + Ipv6Hdr::LEN as i32 + EtheripHdr::LEN as i32),
+    ) {
         error!(&ctx, "Failed to adjust head");
         return Ok(xdp_action::XDP_DROP);
     }
@@ -171,20 +153,26 @@ unsafe fn encapsulate(ctx: XdpContext) -> Result<u32, ()> {
             if (*tcp_opt).kind == 0x02 && (*tcp_opt).len == 4 {
                 // read MSS value
                 offset += TcpOpt::LEN;
-                let mss = u16::from_be(core::ptr::read_unaligned(ptr_at::<u16>(&ctx, offset)?) as u16);
+                let mss =
+                    u16::from_be(core::ptr::read_unaligned(ptr_at::<u16>(&ctx, offset)?) as u16);
                 if mss > target_mss as u16 {
                     info!(&ctx, "MSS: {} -> {}", mss, target_mss);
-                    core::ptr::write_unaligned(ptr_at::<u16>(&ctx, offset)?, u16::to_be(target_mss as u16) as u16);
+                    core::ptr::write_unaligned(
+                        ptr_at::<u16>(&ctx, offset)?,
+                        u16::to_be(target_mss as u16) as u16,
+                    );
 
                     // calculate new checksum
                     let sum16: u16;
 
                     let old_mss_inv = !(mss as u32);
                     let new_mss = target_mss as u32;
-                    
+
                     let old_sum = u16::from_be((*inner_tcp_hdr).check) as u32;
                     let undo = (!old_sum).wrapping_add(old_mss_inv);
-                    let mut sum = undo.wrapping_add(if undo < old_mss_inv { 1 } else { 0 }).wrapping_add(new_mss);
+                    let mut sum = undo
+                        .wrapping_add(if undo < old_mss_inv { 1 } else { 0 })
+                        .wrapping_add(new_mss);
                     if sum < new_mss {
                         sum = sum.wrapping_add(1);
                     }
@@ -210,7 +198,7 @@ unsafe fn encapsulate(ctx: XdpContext) -> Result<u32, ()> {
     }
 
     bpf_redirect(outer_if_index, 0);
-    
+
     Ok(xdp_action::XDP_REDIRECT)
 }
 
@@ -226,7 +214,22 @@ unsafe fn decapsulate(ctx: XdpContext) -> Result<u32, ()> {
     let local_addr = mac::from_u64(*MAC_ADDR_MAP.get(&mac::MAC_ADDR_LOCAL).unwrap_or(&0));
     if (*eth_hdr).dst_addr != local_addr {
         let dst_addr = (*eth_hdr).dst_addr;
-        info!(&ctx, "MAC mismatch: {}:{}:{}:{}:{}:{} vs {}:{}:{}:{}:{}:{}", local_addr[0], local_addr[1], local_addr[2], local_addr[3], local_addr[4], local_addr[5], dst_addr[0], dst_addr[1], dst_addr[2], dst_addr[3], dst_addr[4], dst_addr[5]);
+        info!(
+            &ctx,
+            "MAC mismatch: {}:{}:{}:{}:{}:{} vs {}:{}:{}:{}:{}:{}",
+            local_addr[0],
+            local_addr[1],
+            local_addr[2],
+            local_addr[3],
+            local_addr[4],
+            local_addr[5],
+            dst_addr[0],
+            dst_addr[1],
+            dst_addr[2],
+            dst_addr[3],
+            dst_addr[4],
+            dst_addr[5]
+        );
         return Ok(xdp_action::XDP_PASS);
     }
 
@@ -242,7 +245,9 @@ unsafe fn decapsulate(ctx: XdpContext) -> Result<u32, ()> {
     }
 
     let ip_remote_addr = (*ipv6_hdr).src_addr.in6_u.u6_addr8;
-    let vlan_id = *VLAN_ID_MAP.get(&ipv6::to_u128(ip_remote_addr)).unwrap_or(&4095);
+    let vlan_id = *VLAN_ID_MAP
+        .get(&ipv6::to_u128(ip_remote_addr))
+        .unwrap_or(&4095);
 
     // TODO: Implement non-zero VLAN ID handling
     if vlan_id != 0 {
@@ -264,7 +269,10 @@ unsafe fn decapsulate(ctx: XdpContext) -> Result<u32, ()> {
         return Ok(xdp_action::XDP_PASS);
     }
 
-    if 0 != bpf_xdp_adjust_head(ctx.ctx, (EthHdr::LEN + Ipv6Hdr::LEN + EtheripHdr::LEN) as i32) {
+    if 0 != bpf_xdp_adjust_head(
+        ctx.ctx,
+        (EthHdr::LEN + Ipv6Hdr::LEN + EtheripHdr::LEN) as i32,
+    ) {
         error!(&ctx, "Failed to adjust head");
         return Ok(xdp_action::XDP_DROP);
     }
@@ -281,9 +289,7 @@ unsafe fn decapsulate(ctx: XdpContext) -> Result<u32, ()> {
 }
 
 #[inline(always)]
-unsafe fn ptr_at<T>(
-    ctx: &XdpContext, offset: usize
-) -> Result<*mut T, ()> {
+unsafe fn ptr_at<T>(ctx: &XdpContext, offset: usize) -> Result<*mut T, ()> {
     let start = ctx.data();
     let end = ctx.data_end();
     let len = core::mem::size_of::<T>();

@@ -1,28 +1,22 @@
-
-pub(crate) mod rtnl;
-pub(crate) mod interface;
-
 use anyhow::Context as _;
 use aya::programs::{Xdp, XdpFlags};
 use clap::Parser;
 #[rustfmt::skip]
-use log::{debug, warn};
+use log::{debug, info, warn};
 use tokio::signal;
-
-use etherip_xdp_common::{
-    iface,
-    vlan,
-    mac,
-    ipv6,
-};
 
 use core::net::Ipv6Addr;
 use std::net::SocketAddr;
 
+use etherip_xdp_common::{iface, ipv6, mac, vlan};
+
+pub mod interface;
+pub mod rtnl;
+
 #[derive(Debug, Parser)]
 #[clap(rename_all = "kebab-case")]
 /// A simple XDP program that encapsulates and decapsulates packets using EtherIP.
-struct Opt {
+pub struct Opt {
     /// The outer interface to transmit encapsulated packets.
     #[clap(short = 'o', long, default_value = "eth0")]
     bind_iface: String,
@@ -60,7 +54,7 @@ impl RemoteAddr {
                     match addr.next() {
                         Some(SocketAddr::V6(sock_addr)) => {
                             return Ok(u128::from_be_bytes(sock_addr.ip().octets()));
-                        },
+                        }
 
                         None => break,
                         _ => {
@@ -74,11 +68,12 @@ impl RemoteAddr {
     }
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let opt = Opt::parse();
-
-    env_logger::init();
+pub async fn run(opt: Opt) -> anyhow::Result<()> {
+    let Opt {
+        bind_iface,
+        bridged_iface,
+        remote_address,
+    } = opt;
 
     // Bump the memlock rlimit. This is needed for older kernels that don't use the
     // new memcg based accounting, see https://lwn.net/Articles/837122/
@@ -103,16 +98,27 @@ async fn main() -> anyhow::Result<()> {
         // This can happen if you remove all log statements from your eBPF program.
         warn!("failed to initialize eBPF logger: {}", e);
     }
-    let Opt { bind_iface, bridged_iface, remote_address } = opt;
 
-    let bind_iface_index = interface::name_to_index(&bind_iface).expect("failed to get interface index").inner_unchecked();
+    let bind_iface_index = interface::name_to_index(&bind_iface)
+        .expect("failed to get interface index")
+        .inner_unchecked();
     if bind_iface_index == 0 {
-        return Err(anyhow::anyhow!("failed to get interface index for {}: {}", bind_iface, std::io::Error::last_os_error()));
+        return Err(anyhow::anyhow!(
+            "failed to get interface index for {}: {}",
+            bind_iface,
+            std::io::Error::last_os_error()
+        ));
     }
 
-    let bridged_iface_index = interface::name_to_index(&bridged_iface).expect("failed to get interface index").inner_unchecked();
+    let bridged_iface_index = interface::name_to_index(&bridged_iface)
+        .expect("failed to get interface index")
+        .inner_unchecked();
     if bridged_iface_index == 0 {
-        return Err(anyhow::anyhow!("failed to get interface index for {}: {}", bridged_iface, std::io::Error::last_os_error()));
+        return Err(anyhow::anyhow!(
+            "failed to get interface index for {}: {}",
+            bridged_iface,
+            std::io::Error::last_os_error()
+        ));
     }
 
     let mut remote_addr_map = std::collections::HashMap::<u16, RemoteAddr>::new();
@@ -130,14 +136,14 @@ async fn main() -> anyhow::Result<()> {
     decap_program.load()?;
     decap_program.attach(&bind_iface, XdpFlags::default())
         .context("failed to attach the XDP program with default flags - try changing XdpFlags::default() to XdpFlags::SKB_MODE")?;
-    
-    let mut if_indexes = aya::maps::HashMap::<_, u32, u32>::try_from(ebpf.map_mut("IF_INDEX_MAP").unwrap())?;
+
+    let mut if_indexes =
+        aya::maps::HashMap::<_, u32, u32>::try_from(ebpf.map_mut("IF_INDEX_MAP").unwrap())?;
 
     if_indexes.insert(iface::IF_INDEX_INNER, bridged_iface_index, 0)?;
     if_indexes.insert(iface::IF_INDEX_OUTER, bind_iface_index, 0)?;
 
-
-    println!("XDP program loaded and attached to interfaces");
+    info!("XDP program loaded and attached to interfaces");
 
     let rtnl_conn = rtnl::RtnetlinkConnection::new().await?;
     let mut link_manager = rtnl_conn.link();
@@ -151,16 +157,20 @@ async fn main() -> anyhow::Result<()> {
 
             // Insert the local IPv6 address into the map
             let local_if_id = interface::InterfaceId::new(bind_iface_index);
-            let local_addr = addr_manager.get_v6(local_if_id, rtnl::addr::V6AddressRequestScope::Global).await?;
+            let local_addr = addr_manager
+                .get_v6(local_if_id, rtnl::addr::V6AddressRequestScope::Global)
+                .await?;
             if local_addr.is_empty() {
                 log::error!("No global IPv6 address found for interface {}", bind_iface);
                 continue;
             }
             let local_addr = local_addr[0];
             let local_addr = ipv6::to_u128(local_addr.octets());
-            let mut ipv6_addr_map = aya::maps::HashMap::<_, u16, u128>::try_from(ebpf.map_mut("IPV6_ADDR_MAP").unwrap())?;
+            let mut ipv6_addr_map = aya::maps::HashMap::<_, u16, u128>::try_from(
+                ebpf.map_mut("IPV6_ADDR_MAP").unwrap(),
+            )?;
             ipv6_addr_map.insert(vlan::VLAN_ID_LOCAL, local_addr, 0)?;
-    
+
             // Get the IPv6 gateway
             let route = route_manager.get_v6(Ipv6Addr::UNSPECIFIED, 0).await?;
             if route.is_empty() {
@@ -168,9 +178,15 @@ async fn main() -> anyhow::Result<()> {
                 continue;
             }
             let (egress_if_id, gateway_addr) = route[0];
-            log::debug!("Egress interface ID: {}, Gateway address: {}", egress_if_id.inner_unchecked(), gateway_addr);
-    
-            let lladdr = neigh_manager.neigh_get(egress_if_id, std::net::IpAddr::V6(gateway_addr)).await?;
+            log::debug!(
+                "Egress interface ID: {}, Gateway address: {}",
+                egress_if_id.inner_unchecked(),
+                gateway_addr
+            );
+
+            let lladdr = neigh_manager
+                .neigh_get(egress_if_id, std::net::IpAddr::V6(gateway_addr))
+                .await?;
             if lladdr.is_none() {
                 log::error!("No link layer address found for gateway {}", gateway_addr);
                 continue;
@@ -178,7 +194,7 @@ async fn main() -> anyhow::Result<()> {
             let lladdr = lladdr.unwrap();
             log::debug!("Gateway's link layer address: {:?}", lladdr);
             let lladdr = mac::to_u64((&lladdr as &[u8]).try_into().unwrap());
-    
+
             // Insert the MAC address of the local interface into the map
             let local_mac = link_manager.get_link_layer_address(local_if_id).await?;
             if local_mac.is_none() {
@@ -188,10 +204,11 @@ async fn main() -> anyhow::Result<()> {
             let local_mac = local_mac.unwrap();
             log::debug!("Local MAC address: {:?}", local_mac);
             let local_mac = mac::to_u64((&local_mac as &[u8]).try_into().unwrap());
-            let mut mac_addr_map = aya::maps::HashMap::<_, u32, u64>::try_from(ebpf.map_mut("MAC_ADDR_MAP").unwrap())?;
+            let mut mac_addr_map =
+                aya::maps::HashMap::<_, u32, u64>::try_from(ebpf.map_mut("MAC_ADDR_MAP").unwrap())?;
             mac_addr_map.insert(mac::MAC_ADDR_LOCAL, local_mac, 0)?;
             mac_addr_map.insert(mac::MAC_ADDR_GATEWAY, lladdr, 0)?;
-    
+
             for (vlan_id, remote_addr) in remote_addr_map.iter() {
                 let addr = remote_addr.resolve().await;
                 let addr = if let Ok(addr) = addr {
@@ -201,9 +218,13 @@ async fn main() -> anyhow::Result<()> {
                     continue;
                 };
                 log::debug!("Resolved remote address: {:?}", Ipv6Addr::from(addr));
-                let mut ipv6_addr_map = aya::maps::HashMap::<_, u16, u128>::try_from(ebpf.map_mut("IPV6_ADDR_MAP").unwrap())?;
+                let mut ipv6_addr_map = aya::maps::HashMap::<_, u16, u128>::try_from(
+                    ebpf.map_mut("IPV6_ADDR_MAP").unwrap(),
+                )?;
                 ipv6_addr_map.insert(*vlan_id, addr, 0)?;
-                let mut vlan_id_map = aya::maps::HashMap::<_, u128, u16>::try_from(ebpf.map_mut("VLAN_ID_MAP").unwrap())?;
+                let mut vlan_id_map = aya::maps::HashMap::<_, u128, u16>::try_from(
+                    ebpf.map_mut("VLAN_ID_MAP").unwrap(),
+                )?;
                 vlan_id_map.insert(addr, *vlan_id, 0)?;
             }
 
@@ -213,11 +234,11 @@ async fn main() -> anyhow::Result<()> {
         #[allow(unreachable_code)]
         Err::<(), _>(anyhow::Error::msg("Unreachable"))
     });
-    
+
     let ctrl_c = signal::ctrl_c();
-    println!("Waiting for Ctrl-C...");
+    info!("Waiting for Ctrl-C...");
     ctrl_c.await?;
-    println!("Exiting...");
+    info!("Exiting...");
 
     Ok(())
 }

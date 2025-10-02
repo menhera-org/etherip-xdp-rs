@@ -1,14 +1,16 @@
-
 #![allow(dead_code)]
 
 pub mod addr;
 pub mod link;
-pub mod route;
 pub mod neighbor;
+pub mod route;
 
 pub struct RtnetlinkConnection {
     pub(crate) handle: rtnetlink::Handle,
-    receiver: futures::channel::mpsc::UnboundedReceiver<(netlink_packet_core::NetlinkMessage<netlink_packet_route::RouteNetlinkMessage>, netlink_proto::sys::SocketAddr)>,
+    receiver: futures::channel::mpsc::UnboundedReceiver<(
+        netlink_packet_core::NetlinkMessage<netlink_packet_route::RouteNetlinkMessage>,
+        netlink_proto::sys::SocketAddr,
+    )>,
 }
 
 impl RtnetlinkConnection {
