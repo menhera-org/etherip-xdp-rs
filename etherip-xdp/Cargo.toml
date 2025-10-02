@@ -1,6 +1,6 @@
 [package]
 name = "etherip-xdp"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 
 authors = ["Menhera.org Developers"]
@@ -32,12 +32,7 @@ env_logger = { workspace = true }
 libc = { workspace = true }
 log = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "net", "signal"] }
-futures = "0.3"
-
-netlink-packet-core = "^0.7"
-netlink-packet-route = "^0.19"
-netlink-proto = "^0.11"
-rtnetlink = "0.14.1"
+ftth-rtnl = "0.3.0"
 
 clap = { workspace = true, features = ["derive"] }
 parking_lot = "0.12.3"
