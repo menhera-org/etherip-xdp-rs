@@ -363,7 +363,6 @@ dependencies = [
  "clap",
  "env_logger",
  "etherip-xdp-common",
- "etherip-xdp-ebpf",
  "futures",
  "libc",
  "log",

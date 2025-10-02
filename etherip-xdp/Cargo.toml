@@ -56,7 +56,7 @@ aya-build = { workspace = true }
 # Finally note that *any* usage of `artifact = ...` in *any* Cargo.toml in the workspace breaks
 # workflows with stable cargo; stable cargo outright refuses to load manifests that use unstable
 # features.
-etherip-xdp-ebpf = { version = "0.2.0", path = "../etherip-xdp-ebpf" }
+#etherip-xdp-ebpf = { version = "0.2.0", path = "../etherip-xdp-ebpf" }
 
 [[bin]]
 name = "etherip-xdp"
