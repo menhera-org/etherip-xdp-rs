@@ -2,6 +2,7 @@
 name = "etherip-xdp-ebpf"
 version = "0.2.0"
 edition = "2021"
+publish = false
 
 authors = ["Menhera.org Developers"]
 description = "EtherIP implementation using XDP for Linux, in Rust - eBPF codes."

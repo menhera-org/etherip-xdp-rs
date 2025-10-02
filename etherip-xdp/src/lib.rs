@@ -188,9 +188,16 @@ pub async fn run(opt: Opt) -> anyhow::Result<()> {
     // runtime. This approach is recommended for most real-world use cases. If you would
     // like to specify the eBPF program at runtime rather than at compile-time, you can
     // reach for `Bpf::load_file` instead.
+    #[cfg(feature = "build-ebpf")]
     let mut ebpf = aya::Ebpf::load(aya::include_bytes_aligned!(concat!(
         env!("OUT_DIR"),
         "/etherip-xdp"
+    )))?;
+
+    #[cfg(not(feature = "build-ebpf"))]
+    let mut ebpf = aya::Ebpf::load(aya::include_bytes_aligned!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/assets/etherip-xdp"
     )))?;
     if let Err(e) = aya_log::EbpfLogger::init(&mut ebpf) {
         // This can happen if you remove all log statements from your eBPF program.

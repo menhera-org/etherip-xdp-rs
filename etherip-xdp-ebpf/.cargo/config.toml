@@ -1,0 +1,10 @@
+[build]
+target = "bpfel-unknown-none"
+
+# Nightly-only setting: tells Cargo to build `core` for this target.
+[unstable]
+build-std = ["core"]
+
+# Optional: if you use bpf-linker (recommended) to produce correct BPF ELF
+[target.bpfel-unknown-none]
+rustflags = ["-Clinker=bpf-linker"]
