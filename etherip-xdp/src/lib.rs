@@ -91,7 +91,7 @@ where
 {
     tokio::task::spawn_blocking(f)
         .await
-        .map_err(|err| io::Error::new(ErrorKind::Other, err))?
+        .map_err(|err| io::Error::other(err))?
 }
 
 #[derive(Debug, Clone)]
@@ -163,15 +163,13 @@ impl TunnelSpec {
                         bail!("unknown tunnel option '{key}'");
                     }
                 }
-            } else {
-                if remote.is_none() {
-                    if key.is_empty() {
-                        bail!("remote address must not be empty");
-                    }
-                    remote = Some(key.to_string());
-                } else {
-                    bail!("unexpected tunnel value '{part}'");
+            } else if remote.is_none() {
+                if key.is_empty() {
+                    bail!("remote address must not be empty");
                 }
+                remote = Some(key.to_string());
+            } else {
+                bail!("unexpected tunnel value '{part}'");
             }
         }
 
