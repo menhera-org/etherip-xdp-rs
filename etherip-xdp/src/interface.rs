@@ -1,6 +1,10 @@
+//! Module to handle information about network interfaces.
+
 use std::fmt::Debug;
 
-#[allow(dead_code)]
+/// Converts an network interface index to the name.
+/// 
+/// This function just uses libc. May be a blocking call.
 pub fn index_to_name(index: InterfaceId) -> Result<String, std::io::Error> {
     let index = if let Some(index) = index.inner() {
         index
@@ -23,6 +27,9 @@ pub fn index_to_name(index: InterfaceId) -> Result<String, std::io::Error> {
     Ok(name)
 }
 
+/// Converts a network interface name to the index.
+/// 
+/// This function just uses libc. May be a blocking call.
 pub fn name_to_index(name: &str) -> Result<InterfaceId, std::io::Error> {
     let name = std::ffi::CString::new(name)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
@@ -30,27 +37,22 @@ pub fn name_to_index(name: &str) -> Result<InterfaceId, std::io::Error> {
     if index == 0 {
         return Err(std::io::Error::last_os_error());
     }
-    Ok(InterfaceId::new(index))
+    Ok(InterfaceId::new(Some(index)))
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Hash, Eq)]
+#[derive(Clone, Copy, PartialEq, Hash, Eq)]
 pub struct InterfaceId {
     if_index: libc::c_uint,
 }
 
-#[allow(dead_code)]
 impl InterfaceId {
     pub const UNSPECIFIED: Self = Self { if_index: 0 };
 
-    pub(crate) fn new(if_index: libc::c_uint) -> Self {
-        Self { if_index }
+    pub fn new(if_index: Option<libc::c_uint>) -> Self {
+        Self { if_index: if_index.unwrap_or(0) }
     }
 
-    pub(crate) fn inner_unchecked(&self) -> libc::c_uint {
-        self.if_index
-    }
-
-    pub(crate) fn inner(&self) -> Option<libc::c_uint> {
+    pub fn inner(&self) -> Option<libc::c_uint> {
         if self.if_index == 0 {
             None
         } else {
@@ -63,8 +65,28 @@ impl InterfaceId {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+impl Debug for InterfaceId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(id) = self.inner() {
+            f.write_str(&format!("InterfaceId({id})"))
+        } else {
+            f.write_str(&format!("InterfaceId(UNSPECIFIED)"))
+        }
+    }
+}
+
+/// Network interface with its index and name.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Interface {
     pub if_id: InterfaceId,
     pub if_name: String,
+}
+
+impl Interface {
+    pub fn new(if_id: Option<libc::c_uint>, if_name: String) -> Self {
+        Self {
+            if_id: InterfaceId::new(if_id),
+            if_name,
+        }
+    }
 }

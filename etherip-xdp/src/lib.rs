@@ -5,7 +5,7 @@ use aya::programs::{Xdp, XdpFlags};
 use clap::Parser;
 
 #[rustfmt::skip]
-use log::{debug, info, warn};
+use tracing::{debug, info, warn};
 
 use tokio::signal;
 
@@ -23,7 +23,7 @@ pub mod interface;
 #[cfg_attr(feature = "clap", derive(Parser))]
 #[cfg_attr(feature = "clap", clap(rename_all = "kebab-case"))]
 /// A simple XDP program that encapsulates and decapsulates packets using EtherIP.
-pub struct Opt {
+pub struct EtherIpConfig {
     /// The outer interface to transmit encapsulated packets.
     #[cfg_attr(feature = "clap", clap(short = 'o', long, default_value = "eth0"))]
     pub bind_iface: String,
@@ -200,8 +200,8 @@ impl TunnelSpec {
     }
 }
 
-pub async fn run(opt: Opt) -> anyhow::Result<()> {
-    let Opt {
+pub async fn run(opt: EtherIpConfig) -> anyhow::Result<()> {
+    let EtherIpConfig {
         bind_iface,
         bridged_iface,
         tunnels,
@@ -319,7 +319,7 @@ pub async fn run(opt: Opt) -> anyhow::Result<()> {
 
             let local_if_id = bind_iface_id;
             let Some(local_if_index) = local_if_id.inner() else {
-                log::error!("local interface index became unspecified");
+                tracing::error!("local interface index became unspecified");
                 continue;
             };
 
@@ -334,7 +334,7 @@ pub async fn run(opt: Opt) -> anyhow::Result<()> {
             })
             .await?;
             if local_addrs.is_empty() {
-                log::error!("No global IPv6 address found for interface {}", bind_iface);
+                tracing::error!("No global IPv6 address found for interface {}", bind_iface);
                 continue;
             }
             let local_addr = local_addrs[0];
@@ -353,11 +353,11 @@ pub async fn run(opt: Opt) -> anyhow::Result<()> {
             {
                 Ok(route) => route,
                 Err(err) if err.kind() == ErrorKind::NotFound => {
-                    log::error!("No IPv6 route found");
+                    tracing::error!("No IPv6 route found");
                     continue;
                 }
                 Err(err) => {
-                    log::error!("Failed to retrieve IPv6 default route: {}", err);
+                    tracing::error!("Failed to retrieve IPv6 default route: {}", err);
                     continue;
                 }
             };
@@ -368,7 +368,7 @@ pub async fn run(opt: Opt) -> anyhow::Result<()> {
             let egress_if_index = match egress_if_index {
                 Some(index) if index != 0 => index,
                 _ => {
-                    log::error!("No egress interface found for default IPv6 route");
+                    tracing::error!("No egress interface found for default IPv6 route");
                     continue;
                 }
             };
@@ -389,11 +389,11 @@ pub async fn run(opt: Opt) -> anyhow::Result<()> {
             let gateway_addr = match gateway_addr {
                 Some(addr) => addr,
                 None => {
-                    log::error!("No IPv6 gateway found for default route");
+                    tracing::error!("No IPv6 gateway found for default route");
                     continue;
                 }
             };
-            log::debug!(
+            tracing::debug!(
                 "Egress interface ID: {}, Gateway address: {}",
                 egress_if_index,
                 gateway_addr
@@ -407,11 +407,11 @@ pub async fn run(opt: Opt) -> anyhow::Result<()> {
             {
                 Ok(entry) => entry,
                 Err(err) if err.kind() == ErrorKind::NotFound => {
-                    log::error!("No link layer address found for gateway {}", gateway_addr);
+                    tracing::error!("No link layer address found for gateway {}", gateway_addr);
                     continue;
                 }
                 Err(err) => {
-                    log::error!(
+                    tracing::error!(
                         "Failed to resolve neighbor entry for gateway {}: {}",
                         gateway_addr,
                         err
@@ -424,7 +424,7 @@ pub async fn run(opt: Opt) -> anyhow::Result<()> {
                 Some(addr) => match addr.as_slice().try_into() {
                     Ok(bytes) => bytes,
                     Err(_) => {
-                        log::error!(
+                        tracing::error!(
                             "Unexpected link layer address length for gateway {}",
                             gateway_addr
                         );
@@ -432,11 +432,11 @@ pub async fn run(opt: Opt) -> anyhow::Result<()> {
                     }
                 },
                 None => {
-                    log::error!("No link layer address found for gateway {}", gateway_addr);
+                    tracing::error!("No link layer address found for gateway {}", gateway_addr);
                     continue;
                 }
             };
-            log::debug!("Gateway's link layer address: {:?}", lladdr_bytes);
+            tracing::debug!("Gateway's link layer address: {:?}", lladdr_bytes);
             let lladdr = mac::to_u64(&lladdr_bytes);
 
             let local_mac = call_blocking_io({
@@ -447,11 +447,11 @@ pub async fn run(opt: Opt) -> anyhow::Result<()> {
             let local_mac = match local_mac {
                 Some(mac) => mac.inner,
                 None => {
-                    log::error!("No MAC address found for interface {}", bind_iface);
+                    tracing::error!("No MAC address found for interface {}", bind_iface);
                     continue;
                 }
             };
-            log::debug!("Local MAC address: {:?}", local_mac);
+            tracing::debug!("Local MAC address: {:?}", local_mac);
             let local_mac = mac::to_u64(&local_mac);
             let mut mac_addr_map = aya::maps::HashMap::<_, u32, u64>::try_from(
                 ebpf.map_mut("MAC_ADDR_MAP")
@@ -464,7 +464,7 @@ pub async fn run(opt: Opt) -> anyhow::Result<()> {
                 let addr = match tunnel.remote.resolve().await {
                     Ok(addr) => addr,
                     Err(err) => {
-                        log::error!(
+                        tracing::error!(
                             "Failed to resolve remote address for VLAN {}: {}",
                             tunnel.vlan_id,
                             err
@@ -472,7 +472,7 @@ pub async fn run(opt: Opt) -> anyhow::Result<()> {
                         continue;
                     }
                 };
-                log::debug!(
+                tracing::debug!(
                     "Resolved remote address for VLAN {}: {}",
                     tunnel.vlan_id,
                     Ipv6Addr::from(addr)
