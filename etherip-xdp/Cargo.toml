@@ -19,9 +19,10 @@ include = [
 ]
 
 [features]
-default = ["clap"]
+default = ["clap", "serde"]
 build-ebpf = []
-clap = []
+clap = ["dep:clap"]
+serde = ["dep:serde", "iphost/serde", "vlan/serde"]
 
 [dependencies]
 etherip-xdp-common = { version = "0.2.0", path = "../etherip-xdp-common", features = ["user"] }
@@ -35,11 +36,15 @@ tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "net"
 ftth-rtnl = "0.3.3"
 net-interfaces = "0.1"
 
-clap = { workspace = true, features = ["derive"] }
+vlan = { version = "0.1.1", default-features = false }
+iphost = { version = "0.1", default-features = false }
+serde = { version = "1", features = ["derive"], optional = true }
+clap = { workspace = true, features = ["derive"], optional = true }
 
 [dev-dependencies]
 tracing-log = "0.2"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
+clap = { workspace = true, features = ["derive"] }
 
 [build-dependencies]
 anyhow = { workspace = true }

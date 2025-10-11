@@ -1,8 +1,16 @@
+
+pub use iphost;
+pub use iphost::IpHost;
+pub use net_interfaces;
+pub use net_interfaces::IfName;
+pub use ::vlan as vlan_rs;
+pub use ::vlan::MaybeVlanId;
+
 use anyhow::{anyhow, bail, Context as _};
 use aya::programs::{Xdp, XdpFlags};
 
-#[cfg(feature = "clap")]
-use clap::Parser;
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
 
 #[rustfmt::skip]
 use tracing::{debug, info, warn};
@@ -12,196 +20,94 @@ use tokio::signal;
 use core::net::Ipv6Addr;
 use std::collections::HashSet;
 use std::io::{self, ErrorKind};
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use etherip_xdp_common::{iface, ipv6, mac, vlan};
 use ftth_rtnl::{AddressScope, Ipv6Net, RtnlClient};
 
 pub mod interface;
 
-#[derive(Debug, Clone)]
-#[cfg_attr(feature = "clap", derive(Parser))]
-#[cfg_attr(feature = "clap", clap(rename_all = "kebab-case"))]
-/// A simple XDP program that encapsulates and decapsulates packets using EtherIP.
-pub struct EtherIpConfig {
-    /// The outer interface to transmit encapsulated packets.
-    #[cfg_attr(feature = "clap", clap(short = 'o', long, default_value = "eth0"))]
+#[non_exhaustive]
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Deserialize, Serialize), serde(rename_all = "lowercase"))]
+pub enum EtheripTransport {
+    Ipv4,
+    Ipv6,
+}
+
+impl Default for EtheripTransport {
+    fn default() -> Self {
+        Self::Ipv6
+    }
+}
+
+/// EtherIP tunnel configuration for a particular VLAN / remote pair.
+/// 
+/// Note that no multiple tunnels can share the same VLAN ID.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
+pub struct EtheripTunnelConfig {
+    /// VLAN ID on the bridged interface side. Defaults to 0 (native VLAN).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub vlan_id: MaybeVlanId,
+
+    /// Transport type to use for this tunnel.
+    /// Currently, only 'ipv6' is supported (default).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub transport: EtheripTransport,
+
+    /// Remote tunnel endpoint address / FQDN.
+    pub remote_addr: IpHost,
+
+    /// Optional description.
+    #[cfg_attr(feature = "serde", serde(default))]
+    #[allow(unused_attributes)]
+    pub description: String,
+}
+
+/// EtherIP-XDP server configuration.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
+pub struct EtheripConfig {
+    /// The outer interface to transmit encapsulated packets through.
     pub bind_iface: String,
 
-    /// The inner interface to be bridged by the EtherIP tunnel.
-    #[cfg_attr(feature = "clap", clap(short = 'i', long, default_value = "eth1"))]
+    /// The inner interface to be bridged to our EtherIP tunnels.
     pub bridged_iface: String,
 
-    /// Tunnel definitions mapping VLAN IDs to remote endpoints.
-    #[cfg_attr(feature = "clap", clap(
-        long = "tunnel",
-        value_parser = TunnelSpec::parse,
-        default_value = "remote=::1"
-    ))]
-    pub tunnels: Vec<TunnelConfig>,
+    /// EtherIP tunnel definitions.
+    #[cfg_attr(feature = "serde", serde(rename = "tunnel"))]
+    pub tunnels: Vec<EtheripTunnelConfig>,
 }
 
-/// Note that we currently only support IPv6 addresses.
-#[derive(Debug, Clone)]
-pub enum RemoteAddr {
-    StaticIpv6(u128),
-    Dynamic(String),
-}
-
-impl RemoteAddr {
-    pub fn ipv6_address(addr: Ipv6Addr) -> Self {
-        Self::StaticIpv6(u128::from_be_bytes(addr.octets()))
-    }
-
-    pub fn new(addr: &str) -> Self {
-        if let Ok(addr) = addr.parse::<Ipv6Addr>() {
-            Self::ipv6_address(addr)
-        } else {
-            Self::Dynamic(addr.to_string())
-        }
-    }
-
-    async fn resolve(&self) -> Result<u128, anyhow::Error> {
-        match self {
-            Self::StaticIpv6(addr) => Ok(*addr),
-            Self::Dynamic(addr_str) => {
-                let mut addr = tokio::net::lookup_host((addr_str.as_str(), 0)).await?;
-                loop {
-                    match addr.next() {
-                        Some(SocketAddr::V6(sock_addr)) => {
-                            return Ok(u128::from_be_bytes(sock_addr.ip().octets()));
-                        }
-
-                        None => break,
-                        _ => {
-                            // Ignore other address types
-                        }
-                    }
-                }
-                Err(anyhow::anyhow!("No IPv6 address found for {}", addr_str))
+impl EtheripConfig {
+    pub fn is_valid(&self) -> bool {
+        let mut found_vlan_set = HashSet::new();
+        for tunnel in self.tunnels.iter() {
+            if found_vlan_set.contains(&tunnel.vlan_id) {
+                return false;
             }
+            found_vlan_set.insert(tunnel.vlan_id);
         }
+        true
     }
 }
 
-async fn call_blocking_io<F, R>(f: F) -> io::Result<R>
+async fn call_blocking_io<F, R, E>(f: F) -> io::Result<R>
 where
-    F: FnOnce() -> io::Result<R> + Send + 'static,
+    F: FnOnce() -> Result<R, E> + Send + 'static,
     R: Send + 'static,
+    E: Into<Box<dyn std::error::Error + Send + Sync>> + Send + 'static,
 {
     tokio::task::spawn_blocking(f)
         .await
-        .map_err(io::Error::other)?
+        .map(|r| r.map_err(io::Error::other))
+        .map_err(io::Error::other).flatten()
 }
 
-#[derive(Debug, Clone)]
-pub struct TunnelConfig {
-    pub vlan_id: u16,
-    pub remote: RemoteAddr,
-}
-
-impl TunnelConfig {
-    pub fn new(vlan_id: Option<u16>, remote: &str) -> anyhow::Result<Self> {
-        TunnelSpec::new(vlan_id, remote.to_owned()).into_config()
-    }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct TunnelSpec {
-    pub vlan_id: Option<u16>,
-    pub remote: String,
-}
-
-impl TunnelSpec {
-    pub(crate) fn new(vlan_id: Option<u16>, remote: String) -> Self {
-        Self { vlan_id, remote }
-    }
-
-    #[cfg(feature = "clap")]
-    fn parse(raw: &str) -> Result<TunnelConfig, anyhow::Error> {
-        let raw = raw.trim();
-        if raw.is_empty() {
-            bail!("tunnel definition must not be empty");
-        }
-
-        let mut remote = None;
-        let mut vlan = None;
-
-        for part in raw.split(',') {
-            let part = part.trim();
-            if part.is_empty() {
-                continue;
-            }
-
-            let mut kv = part.splitn(2, '=');
-            let key = kv
-                .next()
-                .map(str::trim)
-                .ok_or_else(|| anyhow!("malformed tunnel definition"))?;
-            if let Some(value) = kv.next() {
-                let value = value.trim();
-                match key {
-                    "remote" => {
-                        if remote.is_some() {
-                            bail!("duplicate remote entry in tunnel definition");
-                        }
-                        if value.is_empty() {
-                            bail!("remote address must not be empty");
-                        }
-                        remote = Some(value.to_string());
-                    }
-                    "vlan" => {
-                        if vlan.is_some() {
-                            bail!("duplicate vlan entry in tunnel definition");
-                        }
-                        let parsed = value
-                            .parse::<u16>()
-                            .map_err(|err| anyhow!("invalid VLAN id '{value}': {err}"))?;
-                        vlan = Some(parsed);
-                    }
-                    _ => {
-                        bail!("unknown tunnel option '{key}'");
-                    }
-                }
-            } else if remote.is_none() {
-                if key.is_empty() {
-                    bail!("remote address must not be empty");
-                }
-                remote = Some(key.to_string());
-            } else {
-                bail!("unexpected tunnel value '{part}'");
-            }
-        }
-
-        let remote = remote.ok_or_else(|| anyhow!("remote address is required for tunnel"))?;
-
-        Self {
-            vlan_id: vlan,
-            remote,
-        }
-        .into_config()
-    }
-
-    pub fn into_config(self) -> anyhow::Result<TunnelConfig> {
-        let vlan_id = self.vlan_id.unwrap_or(vlan::VLAN_ID_NATIVE);
-        if vlan_id != vlan::VLAN_ID_NATIVE && vlan_id > vlan::VLAN_ID_MAX {
-            bail!(
-                "VLAN ID {vlan_id} is out of supported range {}..{}",
-                vlan::VLAN_ID_MIN,
-                vlan::VLAN_ID_MAX
-            );
-        }
-        if vlan_id == vlan::VLAN_ID_LOCAL {
-            bail!("VLAN ID {vlan_id} is reserved for local addressing");
-        }
-
-        let remote = RemoteAddr::new(&self.remote);
-        Ok(TunnelConfig { vlan_id, remote })
-    }
-}
-
-pub async fn run(opt: EtherIpConfig) -> anyhow::Result<()> {
-    let EtherIpConfig {
+pub async fn run(opt: EtheripConfigOld) -> anyhow::Result<()> {
+    let EtheripConfigOld {
         bind_iface,
         bridged_iface,
         tunnels,

@@ -353,12 +353,15 @@ dependencies = [
  "clap",
  "etherip-xdp-common",
  "ftth-rtnl",
+ "iphost",
  "libc",
  "net-interfaces",
+ "serde",
  "tokio",
  "tracing",
  "tracing-log",
  "tracing-subscriber",
+ "vlan",
 ]
 
 [[package]]
@@ -381,6 +384,15 @@ name = "foldhash"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d9c4f5dac5e15c24eb999c26181a6ca40b39fe946cbe4c263c7209467bc83af2"
+
+[[package]]
+name = "fqdn"
+version = "0.4.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c0f5d7f7b3eed2f771fc7f6fcb651f9560d7b0c483d75876082acb4649d266b3"
+dependencies = [
+ "punycode",
+]
 
 [[package]]
 name = "ftth-common"
@@ -557,6 +569,16 @@ dependencies = [
  "bitflags",
  "cfg-if",
  "libc",
+]
+
+[[package]]
+name = "iphost"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "76bbfcb7ca6c054be74886556fdfcab2aef0e25bb55bbe77b3c64d46229dd1c5"
+dependencies = [
+ "fqdn",
+ "serde",
 ]
 
 [[package]]
@@ -832,6 +854,12 @@ checksum = "89ae43fd86e4158d6db51ad8e2b80f313af9cc74f5c0e03ccb87de09998732de"
 dependencies = [
  "unicode-ident",
 ]
+
+[[package]]
+name = "punycode"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e9e1dcb320d6839f6edb64f7a4a59d39b30480d4d1765b56873f7c858538a5fe"
 
 [[package]]
 name = "quote"
@@ -1202,6 +1230,15 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
+
+[[package]]
+name = "vlan"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a424d49493bae36547f32888c593a3950b10b2a179968e22ea21ad28a5013073"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "wasi"
