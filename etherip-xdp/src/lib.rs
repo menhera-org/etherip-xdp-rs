@@ -91,7 +91,7 @@ where
 {
     tokio::task::spawn_blocking(f)
         .await
-        .map_err(|err| io::Error::other(err))?
+        .map_err(io::Error::other)?
 }
 
 #[derive(Debug, Clone)]
