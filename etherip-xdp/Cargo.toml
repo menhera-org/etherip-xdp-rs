@@ -1,6 +1,6 @@
 [package]
 name = "etherip-xdp"
-version = "0.3.1"
+version = "0.4.0"
 edition = "2021"
 
 authors = ["Menhera.org Developers"]
@@ -19,8 +19,9 @@ include = [
 ]
 
 [features]
-build-ebpf = []       # optional path (see Option B)
-default = []
+default = ["clap"]
+build-ebpf = []
+clap = []
 
 [dependencies]
 etherip-xdp-common = { version = "0.2.0", path = "../etherip-xdp-common", features = ["user"] }
