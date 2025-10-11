@@ -406,9 +406,9 @@ dependencies = [
 
 [[package]]
 name = "ftth-rtnl"
-version = "0.3.0"
+version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "90a05fb8a16cbedd22e4641c20027951d9461ee0d97c92846f653dc24e09f3ed"
+checksum = "622139baa44d453ac205f11a71bc2b380326151ba811962a80814614a0b10c0a"
 dependencies = [
  "ftth-common",
  "futures",
@@ -416,7 +416,6 @@ dependencies = [
  "log",
  "netlink-packet-core",
  "netlink-packet-route",
- "netlink-proto",
  "rtnetlink",
  "tokio",
 ]
@@ -1092,11 +1091,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "89e49afdadebb872d3145a5638b59eb0691ea23e46ca484037cfab3b76b95038"
 dependencies = [
  "backtrace",
- "bytes",
  "io-uring",
  "libc",
  "mio",
- "parking_lot",
  "pin-project-lite",
  "signal-hook-registry",
  "slab",

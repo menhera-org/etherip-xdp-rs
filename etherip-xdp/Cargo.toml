@@ -32,7 +32,7 @@ env_logger = { workspace = true }
 libc = { workspace = true }
 log = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "net", "signal"] }
-ftth-rtnl = "0.3.0"
+ftth-rtnl = "0.3.3"
 
 clap = { workspace = true, features = ["derive"] }
 parking_lot = "0.12.3"
