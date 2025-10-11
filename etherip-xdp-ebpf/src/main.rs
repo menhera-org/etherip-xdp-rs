@@ -121,12 +121,12 @@ unsafe fn encapsulate(ctx: XdpContext) -> Result<u32, ()> {
 
     (*eth_hdr).dst_addr = mac::from_u64(*MAC_ADDR_MAP.get(&mac::MAC_ADDR_GATEWAY).unwrap_or(&0));
     (*eth_hdr).src_addr = mac::from_u64(*MAC_ADDR_MAP.get(&mac::MAC_ADDR_LOCAL).unwrap_or(&0));
-    (*eth_hdr).ether_type = EtherType::Ipv6;
+    (*eth_hdr).ether_type = EtherType::Ipv6.into();
 
     let ipv6_hdr = ptr_at::<Ipv6Hdr>(&ctx, EthHdr::LEN)?;
     (*ipv6_hdr).set_version(6);
-    (*ipv6_hdr).set_priority(0);
-    (*ipv6_hdr).flow_label = [0; 3];
+    (*ipv6_hdr).set_dscp_ecn(0, 0);
+    (*ipv6_hdr).set_flow_label(0);
     (*ipv6_hdr).hop_limit = 64;
 
     let etherip_hdr = ptr_at::<EtheripHdr>(&ctx, EthHdr::LEN + Ipv6Hdr::LEN)?;
@@ -172,10 +172,10 @@ unsafe fn encapsulate(ctx: XdpContext) -> Result<u32, ()> {
     let ip_remote_addr = ipv6::from_u128(remote_addr);
     let ip_local_addr = ipv6::from_u128(local_addr);
 
-    (*ipv6_hdr).dst_addr.in6_u.u6_addr8 = ip_remote_addr;
-    (*ipv6_hdr).src_addr.in6_u.u6_addr8 = ip_local_addr;
+    (*ipv6_hdr).dst_addr = ip_remote_addr;
+    (*ipv6_hdr).src_addr = ip_local_addr;
     (*ipv6_hdr).next_hdr = IpProto::Etherip;
-    (*ipv6_hdr).payload_len = u16::to_be((new_frame_len - EthHdr::LEN - Ipv6Hdr::LEN) as u16);
+    (*ipv6_hdr).payload_len = u16::to_be_bytes((new_frame_len - EthHdr::LEN - Ipv6Hdr::LEN) as u16);
 
     loop {
         match inner_ethertype {
@@ -218,12 +218,12 @@ unsafe fn encapsulate(ctx: XdpContext) -> Result<u32, ()> {
                     );
 
                     // calculate new checksum
-                    let sum16: u16;
+                    let sum16: [u8; 2];
 
                     let old_mss_inv = !(mss as u32);
                     let new_mss = target_mss as u32;
 
-                    let old_sum = u16::from_be((*inner_tcp_hdr).check) as u32;
+                    let old_sum = u16::from_be_bytes((*inner_tcp_hdr).check) as u32;
                     let undo = (!old_sum).wrapping_add(old_mss_inv);
                     let mut sum = undo
                         .wrapping_add(if undo < old_mss_inv { 1 } else { 0 })
@@ -237,7 +237,7 @@ unsafe fn encapsulate(ctx: XdpContext) -> Result<u32, ()> {
                     sum = (sum >> 16).wrapping_add(sum & 0xFFFF);
 
                     // calculate the new checksum
-                    sum16 = u16::to_be(!sum as u16);
+                    sum16 = u16::to_be_bytes(!sum as u16);
 
                     // Update the checksum field in the TCP header
                     let csum = &mut (*inner_tcp_hdr).check;
@@ -288,18 +288,18 @@ unsafe fn decapsulate(ctx: XdpContext) -> Result<u32, ()> {
         return Ok(xdp_action::XDP_PASS);
     }
 
-    if core::ptr::read_unaligned(&raw const (*eth_hdr).ether_type) != EtherType::Ipv6 {
+    if core::ptr::read_unaligned(&raw const (*eth_hdr).ether_type) != EtherType::Ipv6.into() {
         return Ok(xdp_action::XDP_PASS);
     }
 
     let ipv6_hdr = ptr_at::<Ipv6Hdr>(&ctx, EthHdr::LEN)?;
     let ip_local_addr = ipv6::from_u128(*IPV6_ADDR_MAP.get(&vlan::VLAN_ID_LOCAL).unwrap_or(&0));
-    if (*ipv6_hdr).dst_addr.in6_u.u6_addr8 != ip_local_addr {
+    if (*ipv6_hdr).dst_addr != ip_local_addr {
         info!(&ctx, "IP addr mismatch");
         return Ok(xdp_action::XDP_PASS);
     }
 
-    let ip_remote_addr = (*ipv6_hdr).src_addr.in6_u.u6_addr8;
+    let ip_remote_addr = (*ipv6_hdr).src_addr;
     let vlan_id = *VLAN_ID_MAP
         .get(&ipv6::to_u128(ip_remote_addr))
         .unwrap_or(&vlan::VLAN_ID_LOCAL);
