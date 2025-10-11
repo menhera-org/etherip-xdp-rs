@@ -35,7 +35,6 @@ tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "net"
 ftth-rtnl = "0.3.3"
 
 clap = { workspace = true, features = ["derive"] }
-parking_lot = "0.12.3"
 [build-dependencies]
 anyhow = { workspace = true }
 aya-build = { workspace = true }

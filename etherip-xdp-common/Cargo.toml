@@ -12,10 +12,7 @@ homepage = "https://github.com/menhera-org/etherip-xdp-rs"
 
 [features]
 default = []
-user = ["aya"]
-
-[dependencies]
-aya = { workspace = true, optional = true }
+user = []
 
 [lib]
 path = "src/lib.rs"
