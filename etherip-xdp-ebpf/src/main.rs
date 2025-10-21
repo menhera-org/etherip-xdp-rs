@@ -371,12 +371,13 @@ unsafe fn ensure_vlan_tag(
         return Err(());
     }
 
-    let new_start = ctx.data() as *mut u8;
-    let old_start = unsafe { new_start.add(VlanHdr::LEN) } as *const u8;
-    core::ptr::copy(old_start, new_start, EthHdr::LEN);
-
-    let eth_hdr = ptr_at::<EthHdr>(ctx, 0)?;
-    (*eth_hdr).ether_type = EtherType::Ieee8021q.into();
+    let dst_eth = ptr_at::<[u8; EthHdr::LEN]>(ctx, 0)?;
+    let src_eth = ptr_at::<[u8; EthHdr::LEN]>(ctx, VlanHdr::LEN)?;
+    let mut eth_copy = core::ptr::read_unaligned(src_eth as *const [u8; EthHdr::LEN]);
+    let vlan_ethertype: u16 = EtherType::Ieee8021q.into();
+    eth_copy[12] = (vlan_ethertype >> 8) as u8;
+    eth_copy[13] = vlan_ethertype as u8;
+    core::ptr::write_unaligned(dst_eth, eth_copy);
 
     let vlan_hdr = ptr_at::<VlanHdr>(ctx, EthHdr::LEN)?;
     let tci = vlan_id & 0x0FFF;
