@@ -65,7 +65,3 @@ aya-build = { workspace = true }
 # workflows with stable cargo; stable cargo outright refuses to load manifests that use unstable
 # features.
 #etherip-xdp-ebpf = { version = "0.2.0", path = "../etherip-xdp-ebpf" }
-
-[[bin]]
-name = "etherip-xdp"
-path = "src/bin/etherip-xdp.rs"
