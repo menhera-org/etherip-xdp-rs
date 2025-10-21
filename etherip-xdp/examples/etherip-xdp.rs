@@ -4,6 +4,7 @@ mod bin {
 
     use clap::Parser;
     use etherip_xdp::EtheripConfig;
+    use tracing_log::LogTracer;
 
     #[derive(Parser)]
     #[command(version, about, long_about = None)]
@@ -17,6 +18,8 @@ mod bin {
 
     #[allow(dead_code)]
     pub(crate) fn main() -> anyhow::Result<()> {
+        LogTracer::init()?;
+        
         let cli = Cli::parse();
 
         let level = match cli.verbose {
@@ -40,7 +43,7 @@ mod bin {
 
 
     fn init_tracing(level: &str) -> anyhow::Result<()> {
-        use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
+        use tracing_subscriber::{EnvFilter, fmt};
 
         let env_filter = if let Ok(value) = std::env::var(EnvFilter::DEFAULT_ENV) {
             EnvFilter::new(value)
@@ -48,9 +51,8 @@ mod bin {
             EnvFilter::new(level)
         };
 
-        tracing_subscriber::registry()
-            .with(env_filter)
-            .with(fmt::layer())
+        fmt::fmt()
+            .with_env_filter(env_filter)
             .init();
         Ok(())
     }
