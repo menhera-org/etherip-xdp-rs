@@ -4,7 +4,14 @@ use anyhow::{anyhow, Context as _};
 #[cfg(feature = "build-ebpf")]
 use aya_build::cargo_metadata;
 
+#[allow(unreachable_code)]
 fn main() -> anyhow::Result<()> {
+    #[cfg(not(feature = "build-lib"))]
+    {
+        eprintln!("Without build-lib feature, no usable library will be built at all!");
+        return Ok(())
+    }
+
     #[cfg(feature = "build-ebpf")]
     {
         let cargo_metadata::Metadata { packages, .. } = cargo_metadata::MetadataCommand::new()

@@ -1,4 +1,4 @@
-#[cfg(feature = "serde")]
+#[cfg(all(feature = "serde", feature = "build-lib"))]
 mod bin {
     use std::path::PathBuf;
 
@@ -53,10 +53,10 @@ mod bin {
     }
 }
 
-#[cfg(feature = "serde")]
+#[cfg(all(feature = "serde", feature = "build-lib"))]
 use bin::main;
 
-#[cfg(not(feature = "serde"))]
+#[cfg(any(not(feature = "serde"), not(feature = "build-lib")))]
 fn main() {
-    compile_error!("To build an example binary, 'serde' feature is needed.");
+    compile_error!("To build an example binary, 'serde' and 'build-lib' features are needed.");
 }
