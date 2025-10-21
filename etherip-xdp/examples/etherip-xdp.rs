@@ -4,7 +4,6 @@ mod bin {
 
     use clap::Parser;
     use etherip_xdp::EtheripConfig;
-    //use tracing_log::LogTracer;
 
     #[derive(Parser)]
     #[command(version, about, long_about = None)]
@@ -28,7 +27,6 @@ mod bin {
         };
 
         init_tracing(level)?;
-        //LogTracer::init()?;
 
         let string = std::fs::read_to_string(&cli.config)?;
         let config = toml::from_str::<EtheripConfig>(&string)?;
