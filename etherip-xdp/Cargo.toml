@@ -19,7 +19,7 @@ include = [
 ]
 
 [features]
-default = ["clap", "serde"]
+default = ["clap", "serde", "build-lib"]
 build-lib = []
 build-ebpf = []
 clap = ["dep:clap"]
@@ -38,7 +38,7 @@ ftth-rtnl = "0.3.3"
 net-interfaces = "0.1"
 
 vlan = { version = "0.1.1", default-features = false }
-iphost = { version = "0.1", default-features = false }
+iphost = { version = "0.3.2", default-features = false }
 serde = { version = "1", features = ["derive"], optional = true }
 clap = { workspace = true, features = ["derive"], optional = true }
 portable-string = "0.4.0"
@@ -47,6 +47,7 @@ portable-string = "0.4.0"
 tracing-log = "0.2"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
 clap = { workspace = true, features = ["derive"] }
+toml = "0.9"
 
 [build-dependencies]
 anyhow = { workspace = true }

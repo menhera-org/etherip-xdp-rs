@@ -3,7 +3,7 @@ mod bin {
     use std::path::PathBuf;
 
     use clap::Parser;
-    use etherip_xdp::{run, EtheripConfigOld};
+    use etherip_xdp::EtheripConfig;
     use tracing_log::LogTracer;
 
     #[derive(Parser)]
@@ -17,8 +17,7 @@ mod bin {
     }
 
     #[allow(dead_code)]
-    #[tokio::main]
-    pub(crate) async fn main() -> anyhow::Result<()> {
+    pub(crate) fn main() -> anyhow::Result<()> {
         let cli = Cli::parse();
 
         let level = match cli.verbose {
@@ -31,8 +30,14 @@ mod bin {
         init_tracing(level)?;
         LogTracer::init()?;
 
-        let opt = EtheripConfigOld::parse();
-        run(opt).await
+        let string = std::fs::read_to_string(&cli.config)?;
+        let config = toml::from_str::<EtheripConfig>(&string)?;
+
+        config.run()?;
+
+        loop {
+            std::thread::park();
+        }
     }
 
 
