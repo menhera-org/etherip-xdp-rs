@@ -322,12 +322,22 @@ unsafe fn decapsulate(ctx: XdpContext) -> Result<u32, ()> {
         return Ok(xdp_action::XDP_PASS);
     }
 
-    if 0 != bpf_xdp_adjust_head(
-        ctx.ctx,
-        (EthHdr::LEN + Ipv6Hdr::LEN + EtheripHdr::LEN) as i32,
-    ) {
+    let inner_offset = EthHdr::LEN + Ipv6Hdr::LEN + EtheripHdr::LEN;
+    let inner_eth_hdr = ptr_at::<EthHdr>(&ctx, inner_offset)?;
+    let inner_ethertype_be = core::ptr::read_unaligned(&raw const (*inner_eth_hdr).ether_type);
+    let inner_ethertype = u16::from_be(inner_ethertype_be);
+    let has_vlan_tag = inner_ethertype == ETH_P_VLAN || inner_ethertype == ETH_P_QINQ;
+
+    if 0 != bpf_xdp_adjust_head(ctx.ctx, inner_offset as i32) {
         error!(&ctx, "Failed to adjust head");
         return Ok(xdp_action::XDP_DROP);
+    }
+
+    if vlan_id != vlan::VLAN_ID_NATIVE {
+        if ensure_vlan_tag(&ctx, vlan_id, has_vlan_tag, inner_ethertype_be).is_err() {
+            error!(&ctx, "Failed to apply VLAN tag");
+            return Ok(xdp_action::XDP_DROP);
+        }
     }
 
     let flag: xdp_action::Type = bpf_redirect(inner_if_index, 0).try_into().map_err(|_| ())?;
@@ -339,6 +349,44 @@ unsafe fn decapsulate(ctx: XdpContext) -> Result<u32, ()> {
 
     //info!(&ctx, "Redirected to {}", inner_if_index);
     Ok(xdp_action::XDP_REDIRECT)
+}
+
+#[inline(always)]
+unsafe fn ensure_vlan_tag(
+    ctx: &XdpContext,
+    vlan_id: u16,
+    had_vlan_tag: bool,
+    original_ethertype_be: u16,
+) -> Result<(), ()> {
+    if had_vlan_tag {
+        let vlan_hdr = ptr_at::<VlanHdr>(ctx, EthHdr::LEN)?;
+        let existing_tci_be = core::ptr::read_unaligned(&raw const (*vlan_hdr).tci);
+        let mut tci = u16::from_be(existing_tci_be);
+        tci = (tci & 0xF000) | (vlan_id & 0x0FFF);
+        core::ptr::write_unaligned(core::ptr::addr_of_mut!((*vlan_hdr).tci), u16::to_be(tci));
+        return Ok(());
+    }
+
+    if bpf_xdp_adjust_head(ctx.ctx, -(VlanHdr::LEN as i32)) != 0 {
+        return Err(());
+    }
+
+    let new_start = ctx.data() as *mut u8;
+    let old_start = unsafe { new_start.add(VlanHdr::LEN) } as *const u8;
+    core::ptr::copy(old_start, new_start, EthHdr::LEN);
+
+    let eth_hdr = ptr_at::<EthHdr>(ctx, 0)?;
+    (*eth_hdr).ether_type = EtherType::Ieee8021q.into();
+
+    let vlan_hdr = ptr_at::<VlanHdr>(ctx, EthHdr::LEN)?;
+    let tci = vlan_id & 0x0FFF;
+    core::ptr::write_unaligned(core::ptr::addr_of_mut!((*vlan_hdr).tci), u16::to_be(tci));
+    core::ptr::write_unaligned(
+        core::ptr::addr_of_mut!((*vlan_hdr).ether_type),
+        original_ethertype_be,
+    );
+
+    Ok(())
 }
 
 #[inline(always)]
