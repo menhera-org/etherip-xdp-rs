@@ -37,7 +37,7 @@ tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "net"
 ftth-rtnl = "0.3.3"
 net-interfaces = "0.1"
 
-vlan = { version = "0.1.1", default-features = false }
+vlan = { version = "0.1.2", default-features = false }
 iphost = { version = "0.3.2", default-features = false }
 serde = { version = "1", features = ["derive"], optional = true }
 clap = { workspace = true, features = ["derive"], optional = true }

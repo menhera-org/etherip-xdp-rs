@@ -1299,9 +1299,9 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vlan"
-version = "0.1.1"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a424d49493bae36547f32888c593a3950b10b2a179968e22ea21ad28a5013073"
+checksum = "b46ddea727730b8aa1a570b9cccf3d3f1a7f67cdfb6aa638f0ab6802e2ec16ae"
 dependencies = [
  "serde",
 ]

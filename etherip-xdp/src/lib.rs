@@ -97,6 +97,16 @@ impl EtheripConfig {
     }
 
     pub fn run(self) -> std::io::Result<()> {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()?;
+
+        rt.block_on(self.run_inner())?;
+
+        Ok(())
+    }
+
+    pub(crate) async fn run_inner(self) -> std::io::Result<()> {
         if !self.is_valid() {
             return Err(std::io::Error::other("Invalid configuration"));
         }
@@ -201,210 +211,204 @@ impl EtheripConfig {
         let bind_iface_task = bind_iface.clone();
         let bind_iface_id_task = bind_iface_id;
 
-        let rt = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build().map_err(|e| std::io::Error::other(e))?;
-        
-        std::thread::spawn(move || {
-            rt.block_on(async move {
-                let mut ebpf = ebpf;
-                let tunnels = tunnels_task;
-                let bind_iface = bind_iface_task;
-                let address_client = address_client;
-                let route_client = route_client;
-                let neighbor_client = neighbor_client;
-                let link_client = link_client;
-                let default_route_prefix = default_ipv6_route_prefix;
-                let bind_iface_id = bind_iface_id_task;
+        tokio::spawn(async move {
+            let mut ebpf = ebpf;
+            let tunnels = tunnels_task;
+            let bind_iface = bind_iface_task;
+            let address_client = address_client;
+            let route_client = route_client;
+            let neighbor_client = neighbor_client;
+            let link_client = link_client;
+            let default_route_prefix = default_ipv6_route_prefix;
+            let bind_iface_id = bind_iface_id_task;
 
-                let mut auto_resolvers = HashMap::new();
+            let mut auto_resolvers = HashMap::new();
 
-                for tunnel in &tunnels {
-                    let auto_resolver = AutoIpHostResolver::new(tunnel.remote_addr.clone(), Duration::from_secs(1));
-                    auto_resolvers.insert(tunnel.vlan_id.as_u16(), auto_resolver);
+            for tunnel in &tunnels {
+                let auto_resolver = AutoIpHostResolver::new(tunnel.remote_addr.clone(), Duration::from_secs(1));
+                auto_resolvers.insert(tunnel.vlan_id.as_u16(), auto_resolver);
+            }
+
+            loop {
+                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+
+                let local_if_id = bind_iface_id;
+                if local_if_id == 0 {
+                    tracing::error!("local interface index became unspecified");
+                    continue;
                 }
 
-                loop {
-                    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                let local_addrs = call_blocking_io({
+                    let address_client = address_client.clone();
+                    move || {
+                        address_client.ipv6_addrs_get_with_scope(
+                            Some(local_if_id),
+                            Some(AddressScope::Universe),
+                        )
+                    }
+                })
+                .await?;
+                if local_addrs.is_empty() {
+                    tracing::error!("No global IPv6 address found for interface {}", bind_iface);
+                    continue;
+                }
+                let local_addr = local_addrs[0];
+                let local_addr = ipv6::to_u128(local_addr.octets());
+                let mut ipv6_addr_map = aya::maps::HashMap::<_, u16, u128>::try_from(
+                    ebpf.map_mut("IPV6_ADDR_MAP")
+                        .ok_or_else(|| std::io::Error::other("IPV6_ADDR_MAP not found"))?,
+                )?;
+                ipv6_addr_map.insert(vlan::VLAN_ID_LOCAL, local_addr, 0)?;
 
-                    let local_if_id = bind_iface_id;
-                    if local_if_id == 0 {
-                        tracing::error!("local interface index became unspecified");
+                let route = match call_blocking_io({
+                    let route_client = route_client.clone();
+                    move || route_client.ipv6_route_get_by_prefix(default_route_prefix)
+                })
+                .await
+                {
+                    Ok(route) => route,
+                    Err(err) if err.kind() == ErrorKind::NotFound => {
+                        tracing::error!("No IPv6 route found");
                         continue;
                     }
-
-                    let local_addrs = call_blocking_io({
-                        let address_client = address_client.clone();
-                        move || {
-                            address_client.ipv6_addrs_get_with_scope(
-                                Some(local_if_id),
-                                Some(AddressScope::Universe),
-                            )
-                        }
-                    })
-                    .await?;
-                    if local_addrs.is_empty() {
-                        tracing::error!("No global IPv6 address found for interface {}", bind_iface);
+                    Err(err) => {
+                        tracing::error!("Failed to retrieve IPv6 default route: {}", err);
                         continue;
                     }
-                    let local_addr = local_addrs[0];
-                    let local_addr = ipv6::to_u128(local_addr.octets());
-                    let mut ipv6_addr_map = aya::maps::HashMap::<_, u16, u128>::try_from(
-                        ebpf.map_mut("IPV6_ADDR_MAP")
-                            .ok_or_else(|| std::io::Error::other("IPV6_ADDR_MAP not found"))?,
-                    )?;
-                    ipv6_addr_map.insert(vlan::VLAN_ID_LOCAL, local_addr, 0)?;
+                };
 
-                    let route = match call_blocking_io({
-                        let route_client = route_client.clone();
-                        move || route_client.ipv6_route_get_by_prefix(default_route_prefix)
+                let egress_if_index = route
+                    .if_id
+                    .or_else(|| route.nexthops.iter().find_map(|hop| hop.if_id));
+                let egress_if_index = match egress_if_index {
+                    Some(index) if index != 0 => index,
+                    _ => {
+                        tracing::error!("No egress interface found for default IPv6 route");
+                        continue;
+                    }
+                };
+                let gateway_addr = route
+                    .gateway
+                    .and_then(|gw| match gw {
+                        IpAddr::V6(addr) => Some(addr),
+                        _ => None,
                     })
-                    .await
-                    {
-                        Ok(route) => route,
-                        Err(err) if err.kind() == ErrorKind::NotFound => {
-                            tracing::error!("No IPv6 route found");
-                            continue;
-                        }
-                        Err(err) => {
-                            tracing::error!("Failed to retrieve IPv6 default route: {}", err);
-                            continue;
-                        }
-                    };
-
-                    let egress_if_index = route
-                        .if_id
-                        .or_else(|| route.nexthops.iter().find_map(|hop| hop.if_id));
-                    let egress_if_index = match egress_if_index {
-                        Some(index) if index != 0 => index,
-                        _ => {
-                            tracing::error!("No egress interface found for default IPv6 route");
-                            continue;
-                        }
-                    };
-                    let gateway_addr = route
-                        .gateway
-                        .and_then(|gw| match gw {
-                            IpAddr::V6(addr) => Some(addr),
-                            _ => None,
-                        })
-                        .or_else(|| {
-                            route.nexthops.iter().find_map(|hop| {
-                                hop.gateway.and_then(|gw| match gw {
-                                    IpAddr::V6(addr) => Some(addr),
-                                    _ => None,
-                                })
+                    .or_else(|| {
+                        route.nexthops.iter().find_map(|hop| {
+                            hop.gateway.and_then(|gw| match gw {
+                                IpAddr::V6(addr) => Some(addr),
+                                _ => None,
                             })
-                        });
-                    let gateway_addr = match gateway_addr {
+                        })
+                    });
+                let gateway_addr = match gateway_addr {
+                    Some(addr) => addr,
+                    None => {
+                        tracing::error!("No IPv6 gateway found for default route");
+                        continue;
+                    }
+                };
+                tracing::debug!(
+                    "Egress interface ID: {}, Gateway address: {}",
+                    egress_if_index,
+                    gateway_addr
+                );
+
+                let gateway_entry = match call_blocking_io({
+                    let neighbor_client = neighbor_client.clone();
+                    move || neighbor_client.get(IpAddr::V6(gateway_addr), Some(egress_if_index))
+                })
+                .await
+                {
+                    Ok(entry) => entry,
+                    Err(err) if err.kind() == ErrorKind::NotFound => {
+                        tracing::error!("No link layer address found for gateway {}", gateway_addr);
+                        continue;
+                    }
+                    Err(err) => {
+                        tracing::error!(
+                            "Failed to resolve neighbor entry for gateway {}: {}",
+                            gateway_addr,
+                            err
+                        );
+                        continue;
+                    }
+                };
+
+                let lladdr_bytes: [u8; 6] = match gateway_entry.link_address {
+                    Some(addr) => match addr.as_slice().try_into() {
+                        Ok(bytes) => bytes,
+                        Err(_) => {
+                            tracing::error!(
+                                "Unexpected link layer address length for gateway {}",
+                                gateway_addr
+                            );
+                            continue;
+                        }
+                    },
+                    None => {
+                        tracing::error!("No link layer address found for gateway {}", gateway_addr);
+                        continue;
+                    }
+                };
+                tracing::debug!("Gateway's link layer address: {:?}", lladdr_bytes);
+                let lladdr = mac::to_u64(&lladdr_bytes);
+
+                let local_mac = call_blocking_io({
+                    let link_client = link_client.clone();
+                    move || link_client.mac_addr_get(local_if_id)
+                })
+                .await?;
+                let local_mac = match local_mac {
+                    Some(mac) => mac.inner,
+                    None => {
+                        tracing::error!("No MAC address found for interface {}", bind_iface);
+                        continue;
+                    }
+                };
+                tracing::debug!("Local MAC address: {:?}", local_mac);
+                let local_mac = mac::to_u64(&local_mac);
+                let mut mac_addr_map = aya::maps::HashMap::<_, u32, u64>::try_from(
+                    ebpf.map_mut("MAC_ADDR_MAP")
+                        .ok_or_else(|| std::io::Error::other("MAC_ADDR_MAP not found"))?,
+                )?;
+                mac_addr_map.insert(mac::MAC_ADDR_LOCAL, local_mac, 0)?;
+                mac_addr_map.insert(mac::MAC_ADDR_GATEWAY, lladdr, 0)?;
+
+                for tunnel in &tunnels {
+                    let addr = auto_resolvers.get(&tunnel.vlan_id.as_u16()).unwrap().ipv6_addr();
+                    let addr = match addr {
                         Some(addr) => addr,
                         None => {
-                            tracing::error!("No IPv6 gateway found for default route");
-                            continue;
-                        }
-                    };
-                    tracing::debug!(
-                        "Egress interface ID: {}, Gateway address: {}",
-                        egress_if_index,
-                        gateway_addr
-                    );
-
-                    let gateway_entry = match call_blocking_io({
-                        let neighbor_client = neighbor_client.clone();
-                        move || neighbor_client.get(IpAddr::V6(gateway_addr), Some(egress_if_index))
-                    })
-                    .await
-                    {
-                        Ok(entry) => entry,
-                        Err(err) if err.kind() == ErrorKind::NotFound => {
-                            tracing::error!("No link layer address found for gateway {}", gateway_addr);
-                            continue;
-                        }
-                        Err(err) => {
                             tracing::error!(
-                                "Failed to resolve neighbor entry for gateway {}: {}",
-                                gateway_addr,
-                                err
+                                "Failed to resolve remote address for VLAN {}",
+                                tunnel.vlan_id,
                             );
                             continue;
                         }
                     };
-
-                    let lladdr_bytes: [u8; 6] = match gateway_entry.link_address {
-                        Some(addr) => match addr.as_slice().try_into() {
-                            Ok(bytes) => bytes,
-                            Err(_) => {
-                                tracing::error!(
-                                    "Unexpected link layer address length for gateway {}",
-                                    gateway_addr
-                                );
-                                continue;
-                            }
-                        },
-                        None => {
-                            tracing::error!("No link layer address found for gateway {}", gateway_addr);
-                            continue;
-                        }
-                    };
-                    tracing::debug!("Gateway's link layer address: {:?}", lladdr_bytes);
-                    let lladdr = mac::to_u64(&lladdr_bytes);
-
-                    let local_mac = call_blocking_io({
-                        let link_client = link_client.clone();
-                        move || link_client.mac_addr_get(local_if_id)
-                    })
-                    .await?;
-                    let local_mac = match local_mac {
-                        Some(mac) => mac.inner,
-                        None => {
-                            tracing::error!("No MAC address found for interface {}", bind_iface);
-                            continue;
-                        }
-                    };
-                    tracing::debug!("Local MAC address: {:?}", local_mac);
-                    let local_mac = mac::to_u64(&local_mac);
-                    let mut mac_addr_map = aya::maps::HashMap::<_, u32, u64>::try_from(
-                        ebpf.map_mut("MAC_ADDR_MAP")
-                            .ok_or_else(|| std::io::Error::other("MAC_ADDR_MAP not found"))?,
+                    tracing::debug!(
+                        "Resolved remote address for VLAN {}: {}",
+                        tunnel.vlan_id,
+                        Ipv6Addr::from(addr)
+                    );
+                    let mut ipv6_addr_map = aya::maps::HashMap::<_, u16, u128>::try_from(
+                        ebpf.map_mut("IPV6_ADDR_MAP")
+                            .ok_or_else(|| std::io::Error::other("IPV6_ADDR_MAP not found"))?,
                     )?;
-                    mac_addr_map.insert(mac::MAC_ADDR_LOCAL, local_mac, 0)?;
-                    mac_addr_map.insert(mac::MAC_ADDR_GATEWAY, lladdr, 0)?;
-
-                    for tunnel in &tunnels {
-                        let addr = auto_resolvers.get(&tunnel.vlan_id.as_u16()).unwrap().ipv6_addr();
-                        let addr = match addr {
-                            Some(addr) => addr,
-                            None => {
-                                tracing::error!(
-                                    "Failed to resolve remote address for VLAN {}",
-                                    tunnel.vlan_id,
-                                );
-                                continue;
-                            }
-                        };
-                        tracing::debug!(
-                            "Resolved remote address for VLAN {}: {}",
-                            tunnel.vlan_id,
-                            Ipv6Addr::from(addr)
-                        );
-                        let mut ipv6_addr_map = aya::maps::HashMap::<_, u16, u128>::try_from(
-                            ebpf.map_mut("IPV6_ADDR_MAP")
-                                .ok_or_else(|| std::io::Error::other("IPV6_ADDR_MAP not found"))?,
-                        )?;
-                        ipv6_addr_map.insert(tunnel.vlan_id.as_u16(), u128::to_be(addr.to_bits()), 0)?;
-                        let mut vlan_id_map = aya::maps::HashMap::<_, u128, u16>::try_from(
-                            ebpf.map_mut("VLAN_ID_MAP")
-                                .ok_or_else(|| std::io::Error::other("VLAN_ID_MAP not found"))?,
-                        )?;
-                        vlan_id_map.insert(u128::to_be(addr.to_bits()), tunnel.vlan_id.as_u16(), 0)?;
-                    }
-
-                    tokio::time::sleep(tokio::time::Duration::from_secs(9)).await;
+                    ipv6_addr_map.insert(tunnel.vlan_id.as_u16(), u128::to_be(addr.to_bits()), 0)?;
+                    let mut vlan_id_map = aya::maps::HashMap::<_, u128, u16>::try_from(
+                        ebpf.map_mut("VLAN_ID_MAP")
+                            .ok_or_else(|| std::io::Error::other("VLAN_ID_MAP not found"))?,
+                    )?;
+                    vlan_id_map.insert(u128::to_be(addr.to_bits()), tunnel.vlan_id.as_u16(), 0)?;
                 }
 
-                #[allow(unreachable_code)]
-                Err::<(), _>(anyhow::Error::msg("Unreachable"))
-            })
+                tokio::time::sleep(tokio::time::Duration::from_secs(9)).await;
+            }
+
+            #[allow(unreachable_code)]
+            Err::<(), _>(anyhow::Error::msg("Unreachable"))
         });
 
         Ok(())
