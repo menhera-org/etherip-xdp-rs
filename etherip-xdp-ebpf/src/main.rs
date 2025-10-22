@@ -5,11 +5,7 @@
 use etherip_xdp_common::{iface, ipv6, mac, vlan};
 
 use aya_ebpf::{
-    bindings::xdp_action,
-    helpers::gen::{bpf_redirect, bpf_xdp_adjust_head},
-    macros::{map, xdp},
-    maps::HashMap,
-    programs::XdpContext,
+    bindings::xdp_action, cty::c_int, helpers::gen::{bpf_redirect, bpf_xdp_adjust_head}, macros::{map, xdp}, maps::HashMap, programs::XdpContext
 };
 use aya_log_ebpf::{error, info};
 
@@ -107,9 +103,25 @@ unsafe fn encapsulate(ctx: XdpContext) -> Result<u32, ()> {
 
     let mut vlan_id = vlan::VLAN_ID_NATIVE;
 
+    let vlan_offset: c_int;
+    let eth_hdr = ptr_at::<EthHdr>(&ctx, 0)?;
+    if (*eth_hdr).ether_type() == Ok(EtherType::Ieee8021q) {
+        if orig_frame_len < (EthHdr::LEN + 4) {
+            return Ok(xdp_action::XDP_DROP);
+        }
+
+        let vlan_hdr = ptr_at::<[u8; 2]>(&ctx, EthHdr::LEN)?;
+        vlan_id = (*vlan_hdr)[1] as u16 | (((*vlan_hdr)[0] as u16 & 0b1111u16) << 8);
+        vlan_offset = 4;
+
+        core::ptr::copy(ptr_at::<u8>(&ctx, 0)?, ptr_at::<u8>(&ctx, 4)?, VlanHdr::LEN - 2);
+    } else {
+        vlan_offset = 0;
+    }
+
     if 0 != bpf_xdp_adjust_head(
         ctx.ctx,
-        0 - (EthHdr::LEN as i32 + Ipv6Hdr::LEN as i32 + EtheripHdr::LEN as i32),
+        vlan_offset - (EthHdr::LEN as i32 + Ipv6Hdr::LEN as i32 + EtheripHdr::LEN as i32),
     ) {
         error!(&ctx, "Failed to adjust head");
         return Ok(xdp_action::XDP_DROP);
@@ -138,27 +150,7 @@ unsafe fn encapsulate(ctx: XdpContext) -> Result<u32, ()> {
     let inner_eth_hdr = ptr_at::<EthHdr>(&ctx, offset)?;
     offset += EthHdr::LEN;
     let ether_type_ptr = core::ptr::addr_of!((*inner_eth_hdr).ether_type) as *const u16;
-    let mut inner_ethertype = u16::from_be(core::ptr::read_unaligned(ether_type_ptr));
-
-    if inner_ethertype == ETH_P_VLAN || inner_ethertype == ETH_P_QINQ {
-        let vlan_hdr_ptr = ptr_at::<VlanHdr>(&ctx, offset)?;
-        let vlan_hdr = core::ptr::read_unaligned(vlan_hdr_ptr);
-        let candidate_vlan = vlan_hdr.vlan_id();
-        if candidate_vlan == vlan::VLAN_ID_LOCAL {
-            return Ok(xdp_action::XDP_PASS);
-        }
-        if candidate_vlan > vlan::VLAN_ID_MAX && candidate_vlan != vlan::VLAN_ID_NATIVE {
-            return Ok(xdp_action::XDP_PASS);
-        }
-        vlan_id = candidate_vlan;
-        inner_ethertype = vlan_hdr.inner_ether_type();
-        offset += VlanHdr::LEN;
-
-        if inner_ethertype == ETH_P_VLAN || inner_ethertype == ETH_P_QINQ {
-            info!(&ctx, "Nested VLAN tags are not supported");
-            return Ok(xdp_action::XDP_PASS);
-        }
-    }
+    let inner_ethertype = u16::from_be(core::ptr::read_unaligned(ether_type_ptr));
 
     let remote_addr = match IPV6_ADDR_MAP.get(&vlan_id) {
         Some(addr) if *addr != 0 => *addr,
