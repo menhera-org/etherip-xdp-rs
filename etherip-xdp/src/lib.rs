@@ -10,8 +10,6 @@ pub use net_interfaces::IfName;
 pub use ::vlan as vlan_rs;
 pub use ::vlan::MaybeVlanId;
 
-pub const LIB_USABLE: bool = true;
-
 use aya::programs::{Xdp, XdpFlags};
 
 #[cfg(feature = "serde")]
@@ -396,12 +394,12 @@ impl EtheripConfig {
                         ebpf.map_mut("IPV6_ADDR_MAP")
                             .ok_or_else(|| std::io::Error::other("IPV6_ADDR_MAP not found"))?,
                     )?;
-                    ipv6_addr_map.insert(tunnel.vlan_id.as_u16(), u128::to_be(addr.to_bits()), 0)?;
+                    ipv6_addr_map.insert(tunnel.vlan_id.as_u16(), ipv6::to_u128(addr.octets()), 0)?;
                     let mut vlan_id_map = aya::maps::HashMap::<_, u128, u16>::try_from(
                         ebpf.map_mut("VLAN_ID_MAP")
                             .ok_or_else(|| std::io::Error::other("VLAN_ID_MAP not found"))?,
                     )?;
-                    vlan_id_map.insert(u128::to_be(addr.to_bits()), tunnel.vlan_id.as_u16(), 0)?;
+                    vlan_id_map.insert(ipv6::to_u128(addr.octets()), tunnel.vlan_id.as_u16(), 0)?;
                 }
 
                 tokio::time::sleep(tokio::time::Duration::from_secs(9)).await;
